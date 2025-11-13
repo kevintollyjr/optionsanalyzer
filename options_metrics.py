@@ -26,9 +26,12 @@ class OptionMetrics:
     # Computed metrics
     dte: int  # Days to expiration
     option_price: Optional[float]  # Mid price or fallback
-    premium_yield: Optional[float]  # P / S (non-annualized)
-    annualized_premium_yield: Optional[float]  # Annualized yield
+    premium_yield: Optional[float]  # P / S (non-annualized, based on mid)
+    annualized_premium_yield: Optional[float]  # Annualized yield (based on mid)
+    bid_premium_yield: Optional[float]  # P / S using bid price
+    bid_annualized_premium_yield: Optional[float]  # Annualized yield using bid
     moneyness: Optional[float]  # (Strike - Spot) / Spot
+    strike_vs_52wk_high: Optional[float]  # Strike as % of 52-week high
     iv_to_hv_ratio: Optional[float]  # IV / HV
     iv_minus_hv: Optional[float]  # IV - HV (in percentage points)
     richness_score: Optional[float]  # Composite richness measure
@@ -183,6 +186,7 @@ def compute_option_metrics(
     contract: OptionContract,
     underlying_price: float,
     hv_reference: Optional[float] = None,
+    week_52_high: Optional[float] = None,
     risk_free_rate: float = 0.045,
     reference_date: date = None
 ) -> OptionMetrics:
@@ -193,6 +197,7 @@ def compute_option_metrics(
         contract: OptionContract object
         underlying_price: Current underlying price
         hv_reference: Reference historical volatility for comparison (e.g., hv_1y)
+        week_52_high: 52-week high price for strike comparison
         risk_free_rate: Risk-free rate for BS delta calculation (default: 4.5%)
         reference_date: Reference date for DTE calculation (default: today)
 
@@ -202,18 +207,30 @@ def compute_option_metrics(
     # Compute DTE
     dte = compute_days_to_expiry(contract.expiration, reference_date)
 
-    # Get option price
+    # Get option price (mid)
     option_price = contract.mid_price
 
-    # Compute premium yields
+    # Compute premium yields (mid-based)
     premium_yield = None
     annualized_premium_yield = None
     if option_price is not None and option_price > 0 and underlying_price > 0:
         premium_yield = compute_premium_yield(option_price, underlying_price)
         annualized_premium_yield = compute_annualized_premium_yield(premium_yield, dte)
 
+    # Compute premium yields (bid-based)
+    bid_premium_yield = None
+    bid_annualized_premium_yield = None
+    if contract.bid is not None and contract.bid > 0 and underlying_price > 0:
+        bid_premium_yield = compute_premium_yield(contract.bid, underlying_price)
+        bid_annualized_premium_yield = compute_annualized_premium_yield(bid_premium_yield, dte)
+
     # Compute moneyness
     moneyness = compute_moneyness(contract.strike, underlying_price)
+
+    # Compute strike vs 52-week high
+    strike_vs_52wk_high = None
+    if week_52_high is not None and week_52_high > 0:
+        strike_vs_52wk_high = contract.strike / week_52_high
 
     # Compute IV vs HV metrics
     iv_to_hv_ratio = None
@@ -248,7 +265,10 @@ def compute_option_metrics(
         option_price=option_price,
         premium_yield=premium_yield,
         annualized_premium_yield=annualized_premium_yield,
+        bid_premium_yield=bid_premium_yield,
+        bid_annualized_premium_yield=bid_annualized_premium_yield,
         moneyness=moneyness,
+        strike_vs_52wk_high=strike_vs_52wk_high,
         iv_to_hv_ratio=iv_to_hv_ratio,
         iv_minus_hv=iv_minus_hv,
         richness_score=richness_score,

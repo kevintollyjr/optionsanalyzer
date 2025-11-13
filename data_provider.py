@@ -25,6 +25,9 @@ class UnderlyingData:
     current_price: float
     currency: str
     fetch_time: datetime
+    week_52_high: Optional[float] = None
+    earnings_date: Optional[date] = None
+    ex_dividend_date: Optional[date] = None
 
 
 @dataclass
@@ -42,6 +45,8 @@ class OptionContract:
     open_interest: Optional[int]
     volume: Optional[int]
     contract_symbol: Optional[str] = None
+    bid_size: Optional[int] = None
+    ask_size: Optional[int] = None
 
     @property
     def mid_price(self) -> Optional[float]:
@@ -160,11 +165,36 @@ class YFinanceProvider(DataProvider):
 
             currency = info.get('currency', 'USD')
 
+            # Fetch 52-week high
+            week_52_high = info.get('fiftyTwoWeekHigh')
+
+            # Fetch earnings date (usually returns next earnings date)
+            earnings_date = None
+            earnings_dates = info.get('earningsDate')
+            if earnings_dates and len(earnings_dates) > 0:
+                # Get the next upcoming earnings date (first one)
+                try:
+                    earnings_date = pd.to_datetime(earnings_dates[0]).date()
+                except:
+                    pass
+
+            # Fetch ex-dividend date
+            ex_dividend_date = None
+            ex_div_timestamp = info.get('exDividendDate')
+            if ex_div_timestamp:
+                try:
+                    ex_dividend_date = pd.to_datetime(ex_div_timestamp, unit='s').date()
+                except:
+                    pass
+
             return UnderlyingData(
                 ticker=ticker,
                 current_price=float(current_price),
                 currency=currency,
-                fetch_time=datetime.now()
+                fetch_time=datetime.now(),
+                week_52_high=float(week_52_high) if week_52_high else None,
+                earnings_date=earnings_date,
+                ex_dividend_date=ex_dividend_date
             )
 
         except Exception as e:
@@ -254,7 +284,9 @@ class YFinanceProvider(DataProvider):
                             delta=None,  # yfinance doesn't provide greeks directly
                             open_interest=int(row['openInterest']) if pd.notna(row.get('openInterest')) else None,
                             volume=int(row['volume']) if pd.notna(row.get('volume')) else None,
-                            contract_symbol=row.get('contractSymbol')
+                            contract_symbol=row.get('contractSymbol'),
+                            bid_size=int(row['bidSize']) if pd.notna(row.get('bidSize')) else None,
+                            ask_size=int(row['askSize']) if pd.notna(row.get('askSize')) else None
                         )
 
                         contracts.append(contract)

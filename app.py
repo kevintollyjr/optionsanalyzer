@@ -160,7 +160,8 @@ def process_ticker_options(
         metrics = compute_option_metrics(
             contract=contract,
             underlying_price=underlying.current_price,
-            hv_reference=hv_reference
+            hv_reference=hv_reference,
+            week_52_high=underlying.week_52_high
         )
         option_metrics.append(metrics)
 
@@ -180,31 +181,47 @@ def process_ticker_options(
     return filtered_metrics
 
 
-def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str) -> pd.DataFrame:
+def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str, use_bid_yield: bool = False) -> pd.DataFrame:
     """
     Convert list of OptionMetrics to a DataFrame for display.
+
+    Args:
+        option_metrics: List of option metrics
+        hv_label: Label for HV column
+        use_bid_yield: If True, display bid-based yields; if False, use mid-based yields
     """
     if not option_metrics:
         return pd.DataFrame()
 
     rows = []
     for opt in option_metrics:
+        # Choose which yield to display based on toggle
+        if use_bid_yield:
+            gross_yield = opt.bid_premium_yield
+            ann_yield = opt.bid_annualized_premium_yield
+        else:
+            gross_yield = opt.premium_yield
+            ann_yield = opt.annualized_premium_yield
+
         row = {
             'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
             'DTE': opt.dte,
             'Strike': opt.contract.strike,
             'Bid': opt.contract.bid,
+            'Bid Size': opt.contract.bid_size,
             'Ask': opt.contract.ask,
+            'Ask Size': opt.contract.ask_size,
             'Mid': opt.option_price,
             'IV': opt.contract.implied_volatility,
             f'{hv_label}': None,  # Will be filled from vol_metrics
             'IV/HV': opt.iv_to_hv_ratio,
             'IV-HV': opt.iv_minus_hv,
             'Richness': opt.richness_score,
-            'Premium Yield': opt.premium_yield,
-            'Ann. Yield': opt.annualized_premium_yield,
+            'Gross Yield': gross_yield,
+            'Ann. Yield': ann_yield,
             'Delta': opt.computed_delta,
             'Moneyness': opt.moneyness,
+            'Strike vs 52W High': opt.strike_vs_52wk_high,
             'OI': opt.contract.open_interest,
             'Volume': opt.contract.volume,
             'Spread %': opt.bid_ask_spread_pct,
@@ -224,7 +241,8 @@ def display_ticker_results(
     ticker: str,
     ticker_data: Dict,
     filtered_metrics: List[OptionMetrics],
-    hv_choice: str
+    hv_choice: str,
+    use_bid_yield: bool = False
 ):
     """
     Display results for a single ticker.
@@ -235,7 +253,7 @@ def display_ticker_results(
     st.header(f"📈 {ticker}")
 
     # Display underlying and volatility info
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
         st.metric("Current Price", f"${underlying.current_price:.2f}")
@@ -253,7 +271,20 @@ def display_ticker_results(
         st.metric("HV (1M)", hv_1m_str)
 
     with col5:
+        week_52_high_str = f"${underlying.week_52_high:.2f}" if underlying.week_52_high else "N/A"
+        st.metric("52W High", week_52_high_str)
+
+    with col6:
         st.metric("Options Found", len(filtered_metrics))
+
+    # Display additional fundamental info
+    col7, col8 = st.columns(2)
+    with col7:
+        earnings_str = underlying.earnings_date.strftime('%Y-%m-%d') if underlying.earnings_date else "N/A"
+        st.info(f"📅 **Next Earnings:** {earnings_str}")
+    with col8:
+        ex_div_str = underlying.ex_dividend_date.strftime('%Y-%m-%d') if underlying.ex_dividend_date else "N/A"
+        st.info(f"💰 **Ex-Dividend Date:** {ex_div_str}")
 
     if not filtered_metrics:
         st.warning(f"No options meet the filter criteria for {ticker}")
@@ -273,7 +304,7 @@ def display_ticker_results(
         hv_ref = vol_metrics.hv_1y
 
     # Create main dataframe
-    df = create_options_dataframe(filtered_metrics, hv_label)
+    df = create_options_dataframe(filtered_metrics, hv_label, use_bid_yield=use_bid_yield)
 
     # Fill in HV column with the reference value
     if hv_ref is not None:
@@ -284,7 +315,7 @@ def display_ticker_results(
     top_by_richness = df.nlargest(5, 'Richness') if 'Richness' in df.columns and not df['Richness'].isna().all() else df.head(5)
 
     # Format for display
-    display_cols = ['Expiration', 'DTE', 'Strike', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Ann. Yield', 'Delta']
+    display_cols = ['Expiration', 'DTE', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High']
     display_df = top_by_richness[display_cols].copy()
 
     # Format numeric columns
@@ -296,10 +327,14 @@ def display_ticker_results(
         display_df['IV/HV'] = display_df['IV/HV'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
     if 'Richness' in display_df.columns:
         display_df['Richness'] = display_df['Richness'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
+    if 'Gross Yield' in display_df.columns:
+        display_df['Gross Yield'] = display_df['Gross Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Ann. Yield' in display_df.columns:
         display_df['Ann. Yield'] = display_df['Ann. Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Delta' in display_df.columns:
         display_df['Delta'] = display_df['Delta'].apply(lambda x: format_number(x, 3) if pd.notna(x) else 'N/A')
+    if 'Strike vs 52W High' in display_df.columns:
+        display_df['Strike vs 52W High'] = display_df['Strike vs 52W High'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
 
     st.dataframe(display_df, use_container_width=True)
 
@@ -317,10 +352,14 @@ def display_ticker_results(
         display_df_yield['IV/HV'] = display_df_yield['IV/HV'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
     if 'Richness' in display_df_yield.columns:
         display_df_yield['Richness'] = display_df_yield['Richness'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
+    if 'Gross Yield' in display_df_yield.columns:
+        display_df_yield['Gross Yield'] = display_df_yield['Gross Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Ann. Yield' in display_df_yield.columns:
         display_df_yield['Ann. Yield'] = display_df_yield['Ann. Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Delta' in display_df_yield.columns:
         display_df_yield['Delta'] = display_df_yield['Delta'].apply(lambda x: format_number(x, 3) if pd.notna(x) else 'N/A')
+    if 'Strike vs 52W High' in display_df_yield.columns:
+        display_df_yield['Strike vs 52W High'] = display_df_yield['Strike vs 52W High'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
 
     st.dataframe(display_df_yield, use_container_width=True)
 
@@ -367,6 +406,73 @@ def display_ticker_results(
                 labels={'Ann. Yield %': 'Annualized Yield (%)', 'Strike': 'Strike Price'}
             )
             st.plotly_chart(fig_yield, use_container_width=True)
+
+    # Regression Analysis Section
+    st.subheader("📈 Regression Analysis: Delta vs Gross Yield")
+
+    # Filter data for regression (need both delta and gross yield)
+    regression_df = df[['Delta', 'Gross Yield']].dropna()
+
+    if len(regression_df) >= 3:  # Need at least 3 points for meaningful regression
+        # Perform linear regression
+        from sklearn.linear_model import LinearRegression
+
+        X = regression_df[['Delta']].values
+        y = regression_df['Gross Yield'].values * 100  # Convert to percentage
+
+        model = LinearRegression()
+        model.fit(X, y)
+
+        # Get R-squared
+        r_squared = model.score(X, y)
+        slope = model.coef_[0]
+        intercept = model.intercept_
+
+        # Create regression plot
+        fig_regression = go.Figure()
+
+        # Add scatter points
+        fig_regression.add_trace(go.Scatter(
+            x=regression_df['Delta'],
+            y=regression_df['Gross Yield'] * 100,
+            mode='markers',
+            name='Data Points',
+            marker=dict(size=8, color='blue', opacity=0.6)
+        ))
+
+        # Add regression line
+        x_line = np.linspace(regression_df['Delta'].min(), regression_df['Delta'].max(), 100)
+        y_line = slope * x_line + intercept
+        fig_regression.add_trace(go.Scatter(
+            x=x_line,
+            y=y_line,
+            mode='lines',
+            name=f'Regression Line (R²={r_squared:.3f})',
+            line=dict(color='red', width=2)
+        ))
+
+        fig_regression.update_layout(
+            title=f'{ticker}: Delta vs Gross Yield Regression',
+            xaxis_title='Delta',
+            yaxis_title='Gross Yield (%)',
+            hovermode='closest'
+        )
+
+        st.plotly_chart(fig_regression, use_container_width=True)
+
+        # Display regression statistics
+        col_reg1, col_reg2, col_reg3 = st.columns(3)
+        with col_reg1:
+            st.metric("R² (Goodness of Fit)", f"{r_squared:.4f}")
+        with col_reg2:
+            st.metric("Slope", f"{slope:.4f}")
+        with col_reg3:
+            st.metric("Intercept", f"{intercept:.4f}%")
+
+        st.info(f"**Regression Equation:** Gross Yield (%) = {slope:.4f} × Delta + {intercept:.4f}")
+
+    else:
+        st.warning("Not enough data points for regression analysis (need at least 3 options with valid delta and gross yield)")
 
     st.divider()
 
@@ -426,6 +532,15 @@ def main():
         index=0,
         help="Which historical volatility period to use for IV comparisons"
     )
+
+    st.sidebar.subheader("Yield Calculation")
+    use_bid_yield = st.sidebar.radio(
+        "Calculate yields based on:",
+        options=[("Midpoint (Bid+Ask)/2", False), ("Bid Price", True)],
+        format_func=lambda x: x[0],
+        index=0,
+        help="Choose whether to calculate yields using bid price (conservative) or midpoint (optimistic)"
+    )[1]
 
     # Run button
     run_scan = st.sidebar.button("🔍 Run Scan", type="primary", use_container_width=True)
@@ -489,7 +604,7 @@ def main():
                 hv_choice=hv_choice
             )
 
-            display_ticker_results(ticker, ticker_data, filtered_metrics, hv_choice)
+            display_ticker_results(ticker, ticker_data, filtered_metrics, hv_choice, use_bid_yield)
 
     else:
         # Show instructions when not running
