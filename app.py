@@ -447,34 +447,43 @@ def display_ticker_results(
 
     with col1:
         if not df.empty and 'Strike' in df.columns and 'IV/HV' in df.columns:
-            fig_richness = px.scatter(
-                df.dropna(subset=['IV/HV']),
-                x='Strike',
-                y='IV/HV',
-                color='DTE',
-                size='Ann. Yield',
-                hover_data=['Expiration', 'Mid', 'Ann. Yield'],
-                title=f'{ticker}: IV/HV Ratio by Strike'
-            )
-            fig_richness.add_hline(y=1.0, line_dash="dash", line_color="red",
-                                   annotation_text="Fair Value (IV=HV)")
-            st.plotly_chart(fig_richness, use_container_width=True)
+            # Drop rows with NaN in columns used for plotting
+            df_richness_chart = df.dropna(subset=['IV/HV', 'Ann. Yield'])
+            if not df_richness_chart.empty:
+                fig_richness = px.scatter(
+                    df_richness_chart,
+                    x='Strike',
+                    y='IV/HV',
+                    color='DTE',
+                    size='Ann. Yield',
+                    hover_data=['Expiration', 'Mid', 'Ann. Yield'],
+                    title=f'{ticker}: IV/HV Ratio by Strike'
+                )
+                fig_richness.add_hline(y=1.0, line_dash="dash", line_color="red",
+                                       annotation_text="Fair Value (IV=HV)")
+                st.plotly_chart(fig_richness, use_container_width=True)
+            else:
+                st.info("Insufficient data for IV/HV chart")
 
     with col2:
         if not df.empty and 'Strike' in df.columns and 'Ann. Yield' in df.columns:
-            df_yield_chart = df.dropna(subset=['Ann. Yield']).copy()
-            df_yield_chart['Ann. Yield %'] = df_yield_chart['Ann. Yield'] * 100
+            # Drop rows with NaN in columns used for plotting
+            df_yield_chart = df.dropna(subset=['Ann. Yield', 'IV/HV']).copy()
+            if not df_yield_chart.empty:
+                df_yield_chart['Ann. Yield %'] = df_yield_chart['Ann. Yield'] * 100
 
-            fig_yield = px.scatter(
-                df_yield_chart,
-                x='Strike',
-                y='Ann. Yield %',
-                color='DTE',
-                size='IV/HV',
-                hover_data=['Expiration', 'Mid', 'IV/HV'],
-                title=f'{ticker}: Annualized Yield by Strike'
-            )
-            st.plotly_chart(fig_yield, use_container_width=True)
+                fig_yield = px.scatter(
+                    df_yield_chart,
+                    x='Strike',
+                    y='Ann. Yield %',
+                    color='DTE',
+                    size='IV/HV',
+                    hover_data=['Expiration', 'Mid', 'IV/HV'],
+                    title=f'{ticker}: Annualized Yield by Strike'
+                )
+                st.plotly_chart(fig_yield, use_container_width=True)
+            else:
+                st.info("Insufficient data for yield chart")
 
     # Single-ticker regression
     st.subheader("Regression Analysis: Delta vs Gross Yield")
