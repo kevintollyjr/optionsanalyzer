@@ -1052,24 +1052,6 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
             line=dict(color='#1f77b4', width=2)
         ))
 
-        # Add option strike overlays
-        if filtered_metrics and len(filtered_metrics) > 0:
-            current_price = underlying.current_price
-
-            for opt in filtered_metrics[:10]:  # Limit to top 10 for clarity
-                strike = opt.contract.strike
-                pct_otm = opt.moneyness * 100 if opt.moneyness else 0
-                ann_yield = opt.bid_annualized_premium_yield if opt.bid_annualized_premium_yield else 0
-
-                # Add horizontal line for strike
-                fig_price.add_hline(
-                    y=strike,
-                    line_dash="dot",
-                    line_color="rgba(255, 127, 14, 0.5)",
-                    annotation_text=f"${strike:.2f} ({pct_otm:.1f}% OTM, {ann_yield*100:.1f}% yield)",
-                    annotation_position="right"
-                )
-
         fig_price.update_layout(
             title=f'{ticker} Price Performance ({selected_period})',
             xaxis_title='Date',
@@ -1095,36 +1077,29 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
                 if dividends is not None and len(dividends) > 0:
                     st.success(f"Found {len(dividends)} dividend payments in history")
 
-                    # Get the most recent dividend payment (quarterly)
-                    last_dividend = dividends.iloc[-1]
-
-                    # Try to get indicated dividend from info (forward annual dividend rate)
-                    indicated_quarterly_div = None
-
-                    # Check for forward annual dividend rate, divide by 4 for quarterly
-                    if 'dividendRate' in info and info['dividendRate']:
-                        indicated_quarterly_div = info['dividendRate'] / 4.0
-
-                    # Use indicated dividend if available, otherwise use last paid dividend
-                    if indicated_quarterly_div and indicated_quarterly_div > 0:
-                        quarterly_div = indicated_quarterly_div
-                        div_source = f"Next indicated quarterly dividend: ${quarterly_div:.4f}"
-                    else:
-                        quarterly_div = last_dividend
-                        div_source = f"Last paid quarterly dividend: ${quarterly_div:.4f}"
-
-                    # Annualize the quarterly dividend
-                    annual_div = quarterly_div * 4.0
-
-                    st.info(f"{div_source} (Annualized: ${annual_div:.4f})")
-
                     # Calculate yield for every day in the price history
+                    # For each date, use the most recent dividend payment as of that date
                     div_yield_data = []
 
                     for idx in price_history.index:
                         try:
+                            # Get the price on this date
                             price = price_history.loc[idx, 'Adj Close']
-                            if price > 0:
+                            if price <= 0:
+                                continue
+
+                            # Find the most recent dividend payment as of this date
+                            # Get all dividends that were paid on or before this date
+                            past_dividends = dividends[dividends.index <= idx]
+
+                            if len(past_dividends) > 0:
+                                # Use the most recent dividend as the quarterly amount
+                                quarterly_div = past_dividends.iloc[-1]
+
+                                # Annualize the quarterly dividend (× 4)
+                                annual_div = quarterly_div * 4.0
+
+                                # Calculate yield: (annualized_dividend / price) × 100
                                 div_yield = (annual_div / price) * 100
                                 div_yield_data.append({'Date': idx, 'Yield': div_yield})
                         except Exception as e:
