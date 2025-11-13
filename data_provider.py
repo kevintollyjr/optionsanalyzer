@@ -168,13 +168,29 @@ class YFinanceProvider(DataProvider):
             # Fetch 52-week high
             week_52_high = info.get('fiftyTwoWeekHigh')
 
-            # Fetch earnings date (usually returns next earnings date)
+            # Fetch earnings date - try multiple approaches
             earnings_date = None
-            earnings_dates = info.get('earningsDate')
-            if earnings_dates and len(earnings_dates) > 0:
-                # Get the next upcoming earnings date (first one)
+
+            # Method 1: Try earnings_date field directly
+            if info.get('earningsDate'):
                 try:
-                    earnings_date = pd.to_datetime(earnings_dates[0]).date()
+                    earnings_dates = info.get('earningsDate')
+                    if isinstance(earnings_dates, list) and len(earnings_dates) > 0:
+                        earnings_date = pd.to_datetime(earnings_dates[0]).date()
+                    else:
+                        earnings_date = pd.to_datetime(earnings_dates).date()
+                except:
+                    pass
+
+            # Method 2: Try mostRecentQuarter or nextFiscalYearEnd
+            if earnings_date is None:
+                try:
+                    # Try using calendar to get earnings
+                    calendar = stock.calendar
+                    if calendar is not None and not calendar.empty:
+                        if 'Earnings Date' in calendar.index:
+                            next_earnings = calendar.loc['Earnings Date'].values[0]
+                            earnings_date = pd.to_datetime(next_earnings).date()
                 except:
                     pass
 
