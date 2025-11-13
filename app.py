@@ -238,7 +238,88 @@ def process_ticker_options(
     return filtered_metrics
 
 
-def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str, use_bid_yield: bool = False) -> pd.DataFrame:
+def compute_option_score(
+    opt: OptionMetrics,
+    underlying_price: float,
+    hv_reference: Optional[float],
+    weight_yield: float,
+    weight_richness: float,
+    weight_upside: float
+) -> Optional[float]:
+    """
+    Compute a composite score for a covered call option.
+
+    Components:
+    A) Vol-adjusted yield: Premium yield adjusted for expected movement
+    B) IV richness: How expensive IV is vs HV
+    C) Upside sacrifice: How little valuable upside we're giving up
+
+    Returns score from 0-100 (higher is better).
+    """
+    if not all([opt.bid_premium_yield, hv_reference, opt.contract.implied_volatility]):
+        return None
+
+    # Component A: Vol-Adjusted Yield
+    # Premium yield adjusted for expected price movement over DTE
+    # Higher yield relative to expected movement = better
+    premium_yield_pct = opt.bid_premium_yield * 100  # Convert to percentage
+
+    # Expected price movement (1 std dev) over DTE period
+    # σ * sqrt(T) where T is in years
+    time_fraction = opt.dte / 365.0
+    expected_move_pct = hv_reference * 100 * (time_fraction ** 0.5)  # Convert to percentage
+
+    # Vol-adjusted yield: how much premium vs expected movement
+    # If we get 3% premium and expect 5% move, ratio is 0.6
+    # If we get 4% premium and expect 2% move, ratio is 2.0
+    if expected_move_pct > 0:
+        vol_adjusted_yield = premium_yield_pct / expected_move_pct
+        # Normalize to 0-100 scale (cap at 2.0 ratio = 100 points)
+        score_a = min(vol_adjusted_yield / 2.0, 1.0) * 100
+    else:
+        score_a = 0
+
+    # Component B: IV Richness
+    # Higher IV/HV ratio = better (selling expensive options)
+    iv_hv_ratio = opt.iv_to_hv_ratio if opt.iv_to_hv_ratio else 1.0
+    # Normalize: ratio of 1.5 = 100 points, ratio of 1.0 = 50 points, < 1.0 = lower
+    score_b = min(max((iv_hv_ratio - 0.8) / 0.7, 0.0), 1.0) * 100
+
+    # Component C: Upside Sacrifice
+    # How little upside we're giving away (strike vs current price)
+    # Higher % OTM = less sacrifice = better
+    if opt.moneyness and opt.moneyness > 0:
+        pct_otm = opt.moneyness * 100
+        # Normalize: 10% OTM = 100 points, 0% = 0 points
+        score_c = min(pct_otm / 10.0, 1.0) * 100
+    else:
+        score_c = 0
+
+    # Weighted composite score
+    total_weight = weight_yield + weight_richness + weight_upside
+    if total_weight == 0:
+        return None
+
+    composite_score = (
+        (score_a * weight_yield) +
+        (score_b * weight_richness) +
+        (score_c * weight_upside)
+    ) / total_weight
+
+    return composite_score
+
+
+def create_options_dataframe(
+    option_metrics: List[OptionMetrics],
+    hv_label: str,
+    use_bid_yield: bool = False,
+    underlying_price: Optional[float] = None,
+    hv_reference: Optional[float] = None,
+    weight_yield: float = 1.0,
+    weight_richness: float = 1.0,
+    weight_upside: float = 1.0,
+    enable_scoring: bool = False
+) -> pd.DataFrame:
     """Convert list of OptionMetrics to a DataFrame for display."""
     if not option_metrics:
         return pd.DataFrame()
@@ -251,6 +332,18 @@ def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str,
         else:
             gross_yield = opt.premium_yield
             ann_yield = opt.annualized_premium_yield
+
+        # Compute score if enabled
+        score = None
+        if enable_scoring and underlying_price and hv_reference:
+            score = compute_option_score(
+                opt=opt,
+                underlying_price=underlying_price,
+                hv_reference=hv_reference,
+                weight_yield=weight_yield,
+                weight_richness=weight_richness,
+                weight_upside=weight_upside
+            )
 
         row = {
             'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
@@ -266,6 +359,7 @@ def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str,
             'IV/HV': opt.iv_to_hv_ratio,
             'IV-HV': opt.iv_minus_hv,
             'Richness': opt.richness_score,
+            'Score': score,
             'Gross Yield': gross_yield,
             'Ann. Yield': ann_yield,
             'Delta': opt.computed_delta,
@@ -280,7 +374,10 @@ def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str,
 
     df = pd.DataFrame(rows)
 
-    if 'Richness' in df.columns:
+    # Sort by Score if enabled and available, otherwise by Richness
+    if enable_scoring and 'Score' in df.columns and df['Score'].notna().any():
+        df = df.sort_values('Score', ascending=False)
+    elif 'Richness' in df.columns:
         df = df.sort_values('Richness', ascending=False)
 
     return df
@@ -291,7 +388,11 @@ def display_ticker_results(
     ticker_data: Dict,
     filtered_metrics: List[OptionMetrics],
     hv_choice: str,
-    use_bid_yield: bool = False
+    use_bid_yield: bool = False,
+    enable_scoring: bool = False,
+    weight_yield: float = 1.0,
+    weight_richness: float = 1.0,
+    weight_upside: float = 1.0
 ):
     """Display results for a single ticker."""
     underlying = ticker_data['underlying']
@@ -349,17 +450,38 @@ def display_ticker_results(
     else:
         hv_ref = vol_metrics.hv_1y
 
-    df = create_options_dataframe(filtered_metrics, hv_label, use_bid_yield=use_bid_yield)
+    df = create_options_dataframe(
+        filtered_metrics,
+        hv_label,
+        use_bid_yield=use_bid_yield,
+        underlying_price=underlying.current_price,
+        hv_reference=hv_ref,
+        weight_yield=weight_yield,
+        weight_richness=weight_richness,
+        weight_upside=weight_upside,
+        enable_scoring=enable_scoring
+    )
 
     if hv_ref is not None:
         df[hv_label] = hv_ref
 
-    # Top opportunities by IV Richness
-    st.subheader("Top Opportunities by IV Richness")
-    top_by_richness = df.nlargest(5, 'Richness') if 'Richness' in df.columns and not df['Richness'].isna().all() else df.head(5)
+    # Top opportunities - by Score if enabled, otherwise by IV Richness
+    if enable_scoring and 'Score' in df.columns and df['Score'].notna().any():
+        st.subheader("Top Opportunities by Score")
+        top_opps = df.nlargest(5, 'Score')
+        sort_col = 'Score'
+    else:
+        st.subheader("Top Opportunities by IV Richness")
+        top_opps = df.nlargest(5, 'Richness') if 'Richness' in df.columns and not df['Richness'].isna().all() else df.head(5)
+        sort_col = 'Richness'
 
-    display_cols = ['Expiration', 'DTE', 'Strike', '% OTM', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High']
-    display_df = top_by_richness[display_cols].copy()
+    # Build display columns dynamically
+    base_display_cols = ['Expiration', 'DTE', 'Strike', '% OTM', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness']
+    if enable_scoring:
+        base_display_cols.append('Score')
+    base_display_cols.extend(['Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High'])
+    display_cols = base_display_cols
+    display_df = top_opps[display_cols].copy()
 
     # Format numeric columns
     if 'IV' in display_df.columns:
@@ -370,6 +492,8 @@ def display_ticker_results(
         display_df['IV/HV'] = display_df['IV/HV'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
     if 'Richness' in display_df.columns:
         display_df['Richness'] = display_df['Richness'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
+    if 'Score' in display_df.columns:
+        display_df['Score'] = display_df['Score'].apply(lambda x: format_number(x, 1) if pd.notna(x) else 'N/A')
     if 'Gross Yield' in display_df.columns:
         display_df['Gross Yield'] = display_df['Gross Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Ann. Yield' in display_df.columns:
@@ -408,6 +532,8 @@ def display_ticker_results(
         display_df_yield['IV/HV'] = display_df_yield['IV/HV'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
     if 'Richness' in display_df_yield.columns:
         display_df_yield['Richness'] = display_df_yield['Richness'].apply(lambda x: format_number(x, 2) if pd.notna(x) else 'N/A')
+    if 'Score' in display_df_yield.columns:
+        display_df_yield['Score'] = display_df_yield['Score'].apply(lambda x: format_number(x, 1) if pd.notna(x) else 'N/A')
     if 'Gross Yield' in display_df_yield.columns:
         display_df_yield['Gross Yield'] = display_df_yield['Gross Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Ann. Yield' in display_df_yield.columns:
@@ -762,6 +888,104 @@ def display_leaderboard(all_ticker_results: Dict, hv_choice: str, use_bid_yield:
     )
 
 
+def display_top_scores_cross_ticker(
+    all_ticker_results: Dict,
+    hv_choice: str,
+    use_bid_yield: bool,
+    weight_yield: float,
+    weight_richness: float,
+    weight_upside: float,
+    top_n: int = 20
+):
+    """Display top N options by composite score across all tickers."""
+    st.header("Top Options by Score (Cross-Ticker)")
+
+    # Aggregate all options with scores
+    all_scored_options = []
+
+    for ticker, data in all_ticker_results.items():
+        underlying = data['ticker_data']['underlying']
+        vol_metrics = data['ticker_data']['volatility']
+
+        # Get HV reference based on choice
+        if hv_choice == '3m':
+            hv_ref = vol_metrics.hv_3m
+        elif hv_choice == '1m':
+            hv_ref = vol_metrics.hv_1m
+        else:
+            hv_ref = vol_metrics.hv_1y
+
+        for opt in data['filtered_metrics']:
+            # Compute score
+            score = compute_option_score(
+                opt=opt,
+                underlying_price=underlying.current_price,
+                hv_reference=hv_ref,
+                weight_yield=weight_yield,
+                weight_richness=weight_richness,
+                weight_upside=weight_upside
+            )
+
+            if score is not None:
+                if use_bid_yield:
+                    gross_yield = opt.bid_premium_yield
+                    ann_yield = opt.bid_annualized_premium_yield
+                else:
+                    gross_yield = opt.premium_yield
+                    ann_yield = opt.annualized_premium_yield
+
+                moneyness_pct = opt.moneyness * 100 if opt.moneyness else None
+
+                all_scored_options.append({
+                    'Score': score,
+                    'Ticker': ticker,
+                    'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
+                    'DTE': opt.dte,
+                    'Strike': opt.contract.strike,
+                    '% OTM': moneyness_pct,
+                    'IV/HV': opt.iv_to_hv_ratio,
+                    'Richness': opt.richness_score,
+                    'Gross Yield': gross_yield,
+                    'Ann. Yield': ann_yield,
+                    'Delta': opt.computed_delta,
+                    'OI': opt.contract.open_interest
+                })
+
+    if not all_scored_options:
+        st.warning("No options with valid scores to display")
+        return
+
+    df_scores = pd.DataFrame(all_scored_options)
+    df_scores = df_scores.sort_values('Score', ascending=False).head(top_n)
+
+    # Display top N
+    st.subheader(f"Top {top_n} Highest Scoring Options")
+    st.dataframe(df_scores, use_container_width=True, height=600)
+
+    # CSV Export
+    csv = df_scores.to_csv(index=False)
+    st.download_button(
+        label=f"Download Top {top_n} by Score as CSV",
+        data=csv,
+        file_name=f"top_scores_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+    # Score distribution chart
+    if len(df_scores) > 0:
+        st.subheader("Score Distribution")
+        fig_dist = px.histogram(
+            df_scores,
+            x='Score',
+            nbins=20,
+            title='Distribution of Composite Scores',
+            labels={'Score': 'Composite Score', 'count': 'Number of Options'}
+        )
+        st.plotly_chart(fig_dist, use_container_width=True)
+
+    st.divider()
+
+
 def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metrics: List[OptionMetrics]):
     """Display detailed single-stock analysis with price charts and option overlays."""
     st.header(f"Single Stock Deep Dive: {ticker}")
@@ -1052,6 +1276,58 @@ def main():
     if delta_missing_mode == "Use Black-Scholes approx":
         st.sidebar.info("Using BS approximation for delta")
 
+    st.sidebar.subheader("Scoring System")
+
+    enable_scoring = st.sidebar.checkbox(
+        "Enable Composite Scoring",
+        value=False,
+        help="Calculate a weighted composite score for each option based on vol-adjusted yield, IV richness, and upside sacrifice"
+    )
+
+    if enable_scoring:
+        st.sidebar.markdown("**Score Component Weights:**")
+
+        weight_yield = st.sidebar.slider(
+            "A) Vol-Adjusted Yield",
+            min_value=0.0,
+            max_value=3.0,
+            value=1.0,
+            step=0.1,
+            help="Weight for premium yield vs expected price movement (higher = prioritize yield per unit of risk)"
+        )
+
+        weight_richness = st.sidebar.slider(
+            "B) IV Richness (IV/HV)",
+            min_value=0.0,
+            max_value=3.0,
+            value=1.0,
+            step=0.1,
+            help="Weight for implied vs historical volatility (higher = prioritize selling expensive options)"
+        )
+
+        weight_upside = st.sidebar.slider(
+            "C) Upside Sacrifice (% OTM)",
+            min_value=0.0,
+            max_value=3.0,
+            value=1.0,
+            step=0.1,
+            help="Weight for how far OTM the strike is (higher = prioritize preserving upside)"
+        )
+
+        top_n_scores = st.sidebar.number_input(
+            "Top N to display (cross-ticker)",
+            min_value=5,
+            max_value=100,
+            value=20,
+            step=5,
+            help="Number of top-scoring options to show in cross-ticker view"
+        )
+    else:
+        weight_yield = 1.0
+        weight_richness = 1.0
+        weight_upside = 1.0
+        top_n_scores = 20
+
     st.sidebar.divider()
 
     # Display last scan timestamp if available
@@ -1170,7 +1446,17 @@ def main():
                 'filtered_metrics': filtered_metrics
             }
 
-            display_ticker_results(ticker, ticker_data, filtered_metrics, hv_choice, use_bid_yield)
+            display_ticker_results(
+                ticker,
+                ticker_data,
+                filtered_metrics,
+                hv_choice,
+                use_bid_yield,
+                enable_scoring=enable_scoring,
+                weight_yield=weight_yield,
+                weight_richness=weight_richness,
+                weight_upside=weight_upside
+            )
 
         # Display cross-ticker regression analysis
         if len(all_ticker_results) > 0:
@@ -1179,6 +1465,18 @@ def main():
         # Display cross-ticker leaderboard
         if len(all_ticker_results) > 0:
             display_leaderboard(all_ticker_results, hv_choice, use_bid_yield)
+
+        # Display top scores cross-ticker (if scoring is enabled)
+        if enable_scoring and len(all_ticker_results) > 0:
+            display_top_scores_cross_ticker(
+                all_ticker_results,
+                hv_choice,
+                use_bid_yield,
+                weight_yield,
+                weight_richness,
+                weight_upside,
+                top_n=top_n_scores
+            )
 
         # Store results in session state
         st.session_state.scan_results = all_ticker_results
