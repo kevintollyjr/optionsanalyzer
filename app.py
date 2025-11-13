@@ -33,127 +33,33 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Bloomberg-style CSS
+# Clean, professional styling
 st.markdown("""
 <style>
-    /* Main theme colors */
-    :root {
-        --bg-primary: #000000;
-        --bg-secondary: #1a1a1a;
-        --text-primary: #ffffff;
-        --text-secondary: #b0b0b0;
-        --accent-orange: #ff6600;
-        --accent-blue: #0066cc;
-        --border-color: #333333;
+    /* Subtle professional styling */
+    .main .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
 
-    /* Global styles */
-    .stApp {
-        background-color: #000000;
-    }
-
-    /* Headers */
-    h1, h2, h3 {
-        color: #ff6600 !important;
-        font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-
-    /* Metrics */
-    [data-testid="stMetricValue"] {
-        color: #00ff00;
-        font-size: 24px;
-        font-weight: 700;
-        font-family: 'Courier New', monospace;
-    }
-
-    [data-testid="stMetricLabel"] {
-        color: #b0b0b0;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-
-    /* Data tables */
-    .dataframe {
-        background-color: #1a1a1a;
-        border: 1px solid #333333;
-        color: #ffffff;
-        font-family: 'Courier New', monospace;
-        font-size: 12px;
-    }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background-color: #0d0d0d;
-        border-right: 2px solid #ff6600;
-    }
-
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3 {
-        color: #ff6600;
-    }
-
-    /* Buttons */
-    .stButton > button {
-        background-color: #ff6600;
-        color: #000000;
-        font-weight: 700;
-        border: none;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        transition: all 0.3s;
-    }
-
-    .stButton > button:hover {
-        background-color: #ff8833;
-        box-shadow: 0 0 10px rgba(255, 102, 0, 0.5);
-    }
-
-    /* Info boxes */
-    .stAlert {
-        background-color: #1a1a1a;
-        border-left: 4px solid #0066cc;
-        color: #ffffff;
-    }
-
-    /* Divider */
-    hr {
-        border-color: #ff6600;
-        border-width: 2px;
-    }
-
-    /* Input fields */
-    .stTextInput > div > div > input,
-    .stNumberInput > div > div > input {
-        background-color: #1a1a1a;
-        color: #ffffff;
-        border: 1px solid #333333;
-    }
-
-    /* Expanders */
-    .streamlit-expanderHeader {
-        background-color: #1a1a1a;
-        color: #ff6600;
+    h1 {
+        color: #1f77b4;
         font-weight: 600;
     }
 
-    /* Tabs */
-    .stTabs [data-baseweb="tab-list"] {
-        background-color: #1a1a1a;
-        border-bottom: 2px solid #ff6600;
+    h2 {
+        color: #ff7f0e;
+        margin-top: 2rem;
     }
 
-    .stTabs [data-baseweb="tab"] {
-        color: #b0b0b0;
-        font-weight: 600;
+    h3 {
+        color: #2ca02c;
     }
 
-    .stTabs [aria-selected="true"] {
-        color: #ff6600;
-        border-bottom: 3px solid #ff6600;
+    .stMetric {
+        background-color: #f0f2f6;
+        padding: 1rem;
+        border-radius: 0.5rem;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -236,6 +142,9 @@ def process_ticker_options(
     otm_only: bool,
     min_open_interest: Optional[int],
     max_spread_pct: Optional[float],
+    min_volume: Optional[int],
+    min_strike: Optional[float],
+    max_strike: Optional[float],
     hv_choice: str
 ) -> List[OptionMetrics]:
     """Process options for a ticker and compute metrics."""
@@ -252,6 +161,16 @@ def process_ticker_options(
 
     option_metrics = []
     for contract in options:
+        # Apply strike filters
+        if min_strike is not None and contract.strike < min_strike:
+            continue
+        if max_strike is not None and contract.strike > max_strike:
+            continue
+
+        # Apply volume filter
+        if min_volume is not None and (contract.volume is None or contract.volume < min_volume):
+            continue
+
         metrics = compute_option_metrics(
             contract=contract,
             underlying_price=underlying.current_price,
@@ -333,14 +252,13 @@ def display_ticker_results(
     underlying = ticker_data['underlying']
     vol_metrics = ticker_data['volatility']
 
-    st.markdown(f"## {ticker}")
-    st.markdown("---")
+    st.header(f"{ticker} Analysis")
 
     # Display metrics
     col1, col2, col3, col4, col5, col6 = st.columns(6)
 
     with col1:
-        st.metric("CURRENT PRICE", f"${underlying.current_price:.2f}")
+        st.metric("Current Price", f"${underlying.current_price:.2f}")
 
     with col2:
         hv_1y_str = format_volatility_pct(vol_metrics.hv_1y) if vol_metrics.hv_1y else "N/A"
@@ -356,19 +274,19 @@ def display_ticker_results(
 
     with col5:
         week_52_high_str = f"${underlying.week_52_high:.2f}" if underlying.week_52_high else "N/A"
-        st.metric("52W HIGH", week_52_high_str)
+        st.metric("52W High", week_52_high_str)
 
     with col6:
-        st.metric("OPTIONS FOUND", len(filtered_metrics))
+        st.metric("Options Found", len(filtered_metrics))
 
     # Fundamental info
     col7, col8 = st.columns(2)
     with col7:
         earnings_str = underlying.earnings_date.strftime('%Y-%m-%d') if underlying.earnings_date else "N/A"
-        st.info(f"**NEXT EARNINGS:** {earnings_str}")
+        st.info(f"**Next Earnings:** {earnings_str}")
     with col8:
         ex_div_str = underlying.ex_dividend_date.strftime('%Y-%m-%d') if underlying.ex_dividend_date else "N/A"
-        st.info(f"**EX-DIVIDEND DATE:** {ex_div_str}")
+        st.info(f"**Ex-Dividend Date:** {ex_div_str}")
 
     if not filtered_metrics:
         st.warning(f"[{ticker}] No options meet the filter criteria")
@@ -392,7 +310,7 @@ def display_ticker_results(
         df[hv_label] = hv_ref
 
     # Top opportunities by IV Richness
-    st.markdown("### TOP OPPORTUNITIES BY IV RICHNESS")
+    st.subheader("Top Opportunities by IV Richness")
     top_by_richness = df.nlargest(5, 'Richness') if 'Richness' in df.columns and not df['Richness'].isna().all() else df.head(5)
 
     display_cols = ['Expiration', 'DTE', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High']
@@ -419,7 +337,7 @@ def display_ticker_results(
     st.dataframe(display_df, use_container_width=True)
 
     # Top opportunities by Annualized Yield
-    st.markdown("### TOP OPPORTUNITIES BY ANNUALIZED YIELD")
+    st.subheader("Top Opportunities by Annualized Yield")
     top_by_yield = df.nlargest(5, 'Ann. Yield') if 'Ann. Yield' in df.columns and not df['Ann. Yield'].isna().all() else df.head(5)
 
     display_df_yield = top_by_yield[display_cols].copy()
@@ -445,11 +363,11 @@ def display_ticker_results(
     st.dataframe(display_df_yield, use_container_width=True)
 
     # Full data table
-    with st.expander(f"ALL {len(df)} OPTIONS (SORTABLE TABLE)"):
+    with st.expander(f"View All {len(df)} Options (Sortable Table)"):
         st.dataframe(df, use_container_width=True, height=400)
 
     # Charts
-    st.markdown("### ANALYTICS")
+    st.subheader("Visual Analytics")
 
     col1, col2 = st.columns(2)
 
@@ -462,17 +380,10 @@ def display_ticker_results(
                 color='DTE',
                 size='Ann. Yield',
                 hover_data=['Expiration', 'Mid', 'Ann. Yield'],
-                title=f'{ticker}: IV/HV Ratio by Strike',
-                labels={'IV/HV': 'IV/HV Ratio', 'Strike': 'Strike Price'},
-                template='plotly_dark'
+                title=f'{ticker}: IV/HV Ratio by Strike'
             )
-            fig_richness.add_hline(y=1.0, line_dash="dash", line_color="#ff6600",
+            fig_richness.add_hline(y=1.0, line_dash="dash", line_color="red",
                                    annotation_text="Fair Value (IV=HV)")
-            fig_richness.update_layout(
-                plot_bgcolor='#1a1a1a',
-                paper_bgcolor='#0d0d0d',
-                font_color='#ffffff'
-            )
             st.plotly_chart(fig_richness, use_container_width=True)
 
     with col2:
@@ -487,19 +398,12 @@ def display_ticker_results(
                 color='DTE',
                 size='IV/HV',
                 hover_data=['Expiration', 'Mid', 'IV/HV'],
-                title=f'{ticker}: Annualized Yield by Strike',
-                labels={'Ann. Yield %': 'Annualized Yield (%)', 'Strike': 'Strike Price'},
-                template='plotly_dark'
-            )
-            fig_yield.update_layout(
-                plot_bgcolor='#1a1a1a',
-                paper_bgcolor='#0d0d0d',
-                font_color='#ffffff'
+                title=f'{ticker}: Annualized Yield by Strike'
             )
             st.plotly_chart(fig_yield, use_container_width=True)
 
     # Single-ticker regression
-    st.markdown("### REGRESSION ANALYSIS: DELTA VS GROSS YIELD")
+    st.subheader("Regression Analysis: Delta vs Gross Yield")
 
     regression_df = df[['Delta', 'Gross Yield']].dropna()
 
@@ -521,7 +425,7 @@ def display_ticker_results(
             y=regression_df['Gross Yield'] * 100,
             mode='markers',
             name='Data Points',
-            marker=dict(size=8, color='#0066cc', opacity=0.6)
+            marker=dict(size=8, opacity=0.6)
         ))
 
         x_line = np.linspace(regression_df['Delta'].min(), regression_df['Delta'].max(), 100)
@@ -531,42 +435,38 @@ def display_ticker_results(
             y=y_line,
             mode='lines',
             name=f'Regression Line (R²={r_squared:.3f})',
-            line=dict(color='#ff6600', width=2)
+            line=dict(width=2)
         ))
 
         fig_regression.update_layout(
             title=f'{ticker}: Delta vs Gross Yield Regression',
             xaxis_title='Delta',
             yaxis_title='Gross Yield (%)',
-            hovermode='closest',
-            template='plotly_dark',
-            plot_bgcolor='#1a1a1a',
-            paper_bgcolor='#0d0d0d',
-            font_color='#ffffff'
+            hovermode='closest'
         )
 
         st.plotly_chart(fig_regression, use_container_width=True)
 
         col_reg1, col_reg2, col_reg3 = st.columns(3)
         with col_reg1:
-            st.metric("R² (GOODNESS OF FIT)", f"{r_squared:.4f}")
+            st.metric("R² (Goodness of Fit)", f"{r_squared:.4f}")
         with col_reg2:
-            st.metric("SLOPE", f"{slope:.4f}")
+            st.metric("Slope", f"{slope:.4f}")
         with col_reg3:
-            st.metric("INTERCEPT", f"{intercept:.4f}%")
+            st.metric("Intercept", f"{intercept:.4f}%")
 
-        st.info(f"**REGRESSION EQUATION:** Gross Yield (%) = {slope:.4f} × Delta + {intercept:.4f}")
+        st.info(f"**Regression Equation:** Gross Yield (%) = {slope:.4f} × Delta + {intercept:.4f}")
 
     else:
         st.warning("Not enough data points for regression analysis (need at least 3 options with valid delta and gross yield)")
 
-    st.markdown("---")
+    st.divider()
 
 
 def display_cross_ticker_regression(all_ticker_results: Dict):
     """Display cross-ticker regression analysis for all tickers combined."""
-    st.markdown("## CROSS-TICKER REGRESSION ANALYSIS")
-    st.markdown("### Delta vs Gross Yield: All Tickers Combined")
+    st.header("Cross-Ticker Regression Analysis")
+    st.subheader("Delta vs Gross Yield: All Tickers Combined")
 
     # Aggregate data from all tickers
     all_data = []
@@ -617,7 +517,7 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
         name='Options',
         text=df_all['Label'],
         textposition='top center',
-        textfont=dict(size=8, color='#ffffff'),
+        textfont=dict(size=8),
         marker=dict(
             size=10,
             color=df_all['DTE'],
@@ -625,7 +525,7 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
             showscale=True,
             colorbar=dict(title="DTE"),
             opacity=0.7,
-            line=dict(width=1, color='#ffffff')
+            line=dict(width=1)
         ),
         hovertemplate='<b>%{text}</b><br>Delta: %{x:.3f}<br>Gross Yield: %{y:.2f}%<br><extra></extra>'
     ))
@@ -638,7 +538,7 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
         y=y_line,
         mode='lines',
         name=f'Regression Line (R²={r_squared:.3f})',
-        line=dict(color='#ff6600', width=3, dash='dash')
+        line=dict(width=3, dash='dash')
     ))
 
     fig_cross.update_layout(
@@ -646,10 +546,6 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
         xaxis_title='Delta',
         yaxis_title='Gross Yield (%)',
         hovermode='closest',
-        template='plotly_dark',
-        plot_bgcolor='#1a1a1a',
-        paper_bgcolor='#0d0d0d',
-        font=dict(color='#ffffff', size=12),
         showlegend=True,
         height=700
     )
@@ -659,33 +555,42 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
     # Display statistics
     col1, col2, col3, col4 = st.columns(4)
     with col1:
-        st.metric("TOTAL OPTIONS", len(df_all))
+        st.metric("Total Options", len(df_all))
     with col2:
-        st.metric("R² (GOODNESS OF FIT)", f"{r_squared:.4f}")
+        st.metric("R² (Goodness of Fit)", f"{r_squared:.4f}")
     with col3:
-        st.metric("SLOPE", f"{slope:.4f}")
+        st.metric("Slope", f"{slope:.4f}")
     with col4:
-        st.metric("INTERCEPT", f"{intercept:.4f}%")
+        st.metric("Intercept", f"{intercept:.4f}%")
 
-    st.info(f"**REGRESSION EQUATION:** Gross Yield (%) = {slope:.4f} × Delta + {intercept:.4f}")
+    st.info(f"**Regression Equation:** Gross Yield (%) = {slope:.4f} × Delta + {intercept:.4f}")
 
     # Show data table
-    with st.expander("VIEW ALL DATA POINTS"):
+    with st.expander("View All Data Points"):
         display_df = df_all[['Label', 'Ticker', 'Expiration', 'Strike', 'Delta', 'Gross Yield', 'DTE']].copy()
         display_df = display_df.sort_values('Gross Yield', ascending=False)
         st.dataframe(display_df, use_container_width=True, height=400)
 
-    st.markdown("---")
+        # Download button
+        csv = display_df.to_csv(index=False)
+        st.download_button(
+            label="Download Data as CSV",
+            data=csv,
+            file_name=f"cross_ticker_regression_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+
+    st.divider()
 
 
 def main():
     """Main Streamlit application."""
 
-    st.title("OPTIONS ANALYTICS PLATFORM")
-    st.markdown("##### Covered Call Scanner & Volatility Richness Analyzer")
+    st.title("Options Analytics Platform")
+    st.caption("Covered Call Scanner & Volatility Richness Analyzer")
 
     # Sidebar configuration
-    st.sidebar.markdown("## CONFIGURATION")
+    st.sidebar.header("Configuration")
 
     ticker_input = st.sidebar.text_input(
         "Tickers (comma-separated)",
@@ -693,21 +598,32 @@ def main():
         help="Enter stock tickers separated by commas, e.g., MO, APO, LRCX, JPM"
     )
 
-    st.sidebar.markdown("### Delta Range")
+    st.sidebar.subheader("Delta Range")
     col1, col2 = st.sidebar.columns(2)
     with col1:
         min_delta = st.number_input("Min Delta", min_value=0.0, max_value=1.0, value=0.15, step=0.05)
     with col2:
         max_delta = st.number_input("Max Delta", min_value=0.0, max_value=1.0, value=0.30, step=0.05)
 
-    st.sidebar.markdown("### Expiration Range (DTE)")
+    st.sidebar.subheader("Expiration Range (DTE)")
     col3, col4 = st.sidebar.columns(2)
     with col3:
         min_dte = st.number_input("Min DTE", min_value=1, max_value=730, value=5, step=1)
     with col4:
         max_dte = st.number_input("Max DTE", min_value=1, max_value=730, value=90, step=1)
 
-    st.sidebar.markdown("### Additional Filters")
+    st.sidebar.subheader("Strike Price Range")
+    enable_strike_filter = st.sidebar.checkbox("Enable Strike Price Filter", value=False)
+    min_strike = None
+    max_strike = None
+    if enable_strike_filter:
+        col5, col6 = st.sidebar.columns(2)
+        with col5:
+            min_strike = st.number_input("Min Strike", min_value=0.0, value=0.0, step=1.0)
+        with col6:
+            max_strike = st.number_input("Max Strike", min_value=0.0, value=1000.0, step=1.0)
+
+    st.sidebar.subheader("Liquidity Filters")
 
     otm_only = st.sidebar.checkbox("OTM Only", value=True, help="Only show out-of-the-money options")
 
@@ -716,12 +632,17 @@ def main():
     if enable_oi_filter:
         min_open_interest = st.sidebar.number_input("Min Open Interest", min_value=0, value=100, step=10)
 
+    enable_volume_filter = st.sidebar.checkbox("Filter by Volume", value=False)
+    min_volume = None
+    if enable_volume_filter:
+        min_volume = st.sidebar.number_input("Min Volume", min_value=0, value=10, step=5)
+
     enable_spread_filter = st.sidebar.checkbox("Filter by Bid-Ask Spread", value=True)
     max_spread_pct = None
     if enable_spread_filter:
         max_spread_pct = st.sidebar.number_input("Max Spread %", min_value=0.0, max_value=100.0, value=15.0, step=1.0)
 
-    st.sidebar.markdown("### Volatility Comparison")
+    st.sidebar.subheader("Volatility & Yield")
     hv_choice = st.sidebar.selectbox(
         "HV Reference Period",
         options=['1y', '3m', '1m'],
@@ -729,16 +650,16 @@ def main():
         help="Which historical volatility period to use for IV comparisons"
     )
 
-    st.sidebar.markdown("### Yield Calculation")
     use_bid_yield = st.sidebar.radio(
         "Calculate yields based on:",
         options=[("Midpoint (Bid+Ask)/2", False), ("Bid Price", True)],
         format_func=lambda x: x[0],
-        index=1,  # Default to Bid Price (conservative)
+        index=1,
         help="Choose whether to calculate yields using bid price (conservative) or midpoint (optimistic)"
     )[1]
 
-    run_scan = st.sidebar.button("RUN SCAN", type="primary", use_container_width=True)
+    st.sidebar.divider()
+    run_scan = st.sidebar.button("Run Scan", type="primary", use_container_width=True)
 
     if run_scan:
         tickers = parse_tickers(ticker_input)
@@ -782,7 +703,7 @@ def main():
             return
 
         st.success(f"Successfully fetched data for {len(results)} ticker(s)")
-        st.markdown("---")
+        st.divider()
 
         # Process and display results for each ticker
         for ticker, ticker_data in results.items():
@@ -795,6 +716,9 @@ def main():
                 otm_only=otm_only,
                 min_open_interest=min_open_interest,
                 max_spread_pct=max_spread_pct,
+                min_volume=min_volume,
+                min_strike=min_strike,
+                max_strike=max_strike,
                 hv_choice=hv_choice
             )
 
@@ -811,36 +735,40 @@ def main():
             display_cross_ticker_regression(all_ticker_results)
 
     else:
-        st.info("Configure your scan parameters in the sidebar and click 'RUN SCAN' to begin")
+        st.info("Configure your scan parameters in the sidebar and click 'Run Scan' to begin")
 
-        st.markdown("### OVERVIEW")
-        st.markdown("""
-        This professional-grade options analytics platform provides comprehensive analysis for covered call strategies:
+        st.subheader("Features")
 
-        **Volatility Analysis**
-        - Realized (historical) volatility: 1Y, 3M, 1M periods
-        - Implied volatility from option prices
-        - IV vs HV comparison with richness scoring
+        col1, col2 = st.columns(2)
 
-        **Yield Metrics**
-        - Gross yield (non-annualized premium / stock price)
-        - Annualized yield for time-adjusted comparison
-        - Bid-based (conservative) or midpoint-based (optimistic) calculations
+        with col1:
+            st.markdown("""
+            **Volatility Analysis**
+            - Realized (historical) volatility: 1Y, 3M, 1M periods
+            - Implied volatility from option prices
+            - IV vs HV comparison with richness scoring
 
-        **Advanced Analytics**
-        - Delta filtering with Black-Scholes approximation
-        - Regression analysis: Delta vs Gross Yield
-        - Cross-ticker regression for portfolio-level insights
-        - 52-week high comparison
-        - Earnings and ex-dividend date tracking
+            **Yield Metrics**
+            - Gross yield (non-annualized premium / stock price)
+            - Annualized yield for time-adjusted comparison
+            - Bid-based (conservative) or midpoint-based (optimistic)
+            """)
 
-        **Filtering Capabilities**
-        - Delta range (probability-based filtering)
-        - Days to expiration (DTE) range
-        - OTM-only options
-        - Minimum open interest (liquidity)
-        - Maximum bid-ask spread (transaction cost control)
-        """)
+        with col2:
+            st.markdown("""
+            **Advanced Analytics**
+            - Delta filtering with Black-Scholes approximation
+            - Single-ticker regression: Delta vs Gross Yield
+            - Cross-ticker regression for portfolio-level insights
+            - 52-week high comparison
+            - Earnings and ex-dividend date tracking
+
+            **Filtering Capabilities**
+            - Delta range, DTE range, Strike price range
+            - OTM-only options
+            - Minimum open interest, volume
+            - Maximum bid-ask spread
+            """)
 
 
 if __name__ == "__main__":
