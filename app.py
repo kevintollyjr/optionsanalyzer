@@ -9,6 +9,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 import plotly.graph_objects as go
 import plotly.express as px
@@ -1045,7 +1046,7 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
 
         fig_price.add_trace(go.Scatter(
             x=price_history.index,
-            y=price_history['Close'],
+            y=price_history['Adj Close'],
             mode='lines',
             name='Price',
             line=dict(color='#1f77b4', width=2)
@@ -1112,7 +1113,7 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
                             try:
                                 annual_div = trailing_divs.sum()
                                 if idx in price_history.index:
-                                    price = price_history.loc[idx, 'Close']
+                                    price = price_history.loc[idx, 'Adj Close']
                                     if price > 0:
                                         div_yield = (annual_div / price) * 100
                                         div_yield_data.append({'Date': idx, 'Yield': div_yield})
@@ -1363,8 +1364,16 @@ def main():
             hours_ago = minutes_ago // 60
             time_str = f"{hours_ago} hour{'s' if hours_ago > 1 else ''} ago"
 
-        # Display both relative and exact time
-        exact_time = scan_time.strftime("%Y-%m-%d %H:%M:%S")
+        # Convert to Eastern Time for display
+        # If scan_time is naive (no timezone), assume it's local/UTC
+        if scan_time.tzinfo is None:
+            # Make it timezone-aware as UTC, then convert to ET
+            scan_time_utc = scan_time.replace(tzinfo=ZoneInfo('UTC'))
+        else:
+            scan_time_utc = scan_time.astimezone(ZoneInfo('UTC'))
+
+        scan_time_et = scan_time_utc.astimezone(ZoneInfo('America/New_York'))
+        exact_time = scan_time_et.strftime("%Y-%m-%d %H:%M:%S ET")
         st.sidebar.info(f"**Last scan:** {time_str}\n\n**Exact time:** {exact_time}")
 
     col_scan1, col_scan2 = st.sidebar.columns(2)
