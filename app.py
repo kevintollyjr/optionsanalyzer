@@ -762,8 +762,204 @@ def display_leaderboard(all_ticker_results: Dict, hv_choice: str, use_bid_yield:
     )
 
 
+def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metrics: List[OptionMetrics]):
+    """Display detailed single-stock analysis with price charts and option overlays."""
+    st.header(f"Single Stock Deep Dive: {ticker}")
+
+    underlying = ticker_data['underlying']
+
+    # Time period selector
+    st.subheader("Price Performance Analysis")
+    time_periods = {
+        '5Y': 1825,
+        '1Y': 365,
+        'YTD': None,  # Special handling
+        '6M': 180,
+        '3M': 90,
+        '1M': 30
+    }
+
+    col_period1, col_period2 = st.columns([3, 1])
+    with col_period1:
+        selected_period = st.radio(
+            "Select time period:",
+            options=list(time_periods.keys()),
+            horizontal=True,
+            index=2  # Default to YTD
+        )
+
+    with col_period2:
+        show_dividend_yield = st.checkbox("Show Dividend Yield Chart", value=False)
+
+    # Fetch historical data for the selected period
+    end_date = date.today()
+    if selected_period == 'YTD':
+        start_date = date(end_date.year, 1, 1)
+    else:
+        days = time_periods[selected_period]
+        start_date = end_date - timedelta(days=days)
+
+    try:
+        from data_provider import get_default_provider
+        provider = get_default_provider()
+
+        # Fetch price history
+        with st.spinner(f"Fetching {selected_period} price data for {ticker}..."):
+            price_history = provider.fetch_historical_prices(ticker, start_date, end_date)
+
+        if price_history.empty:
+            st.warning(f"No price history available for {ticker}")
+            return
+
+        # Create price chart
+        fig_price = go.Figure()
+
+        fig_price.add_trace(go.Scatter(
+            x=price_history.index,
+            y=price_history['Close'],
+            mode='lines',
+            name='Price',
+            line=dict(color='#1f77b4', width=2)
+        ))
+
+        # Add option strike overlays
+        if filtered_metrics:
+            current_price = underlying.current_price
+
+            for opt in filtered_metrics[:10]:  # Limit to top 10 for clarity
+                strike = opt.contract.strike
+                pct_otm = opt.moneyness * 100 if opt.moneyness else 0
+                ann_yield = opt.bid_annualized_premium_yield if opt.bid_annualized_premium_yield else 0
+
+                # Add horizontal line for strike
+                fig_price.add_hline(
+                    y=strike,
+                    line_dash="dot",
+                    line_color="rgba(255, 127, 14, 0.5)",
+                    annotation_text=f"${strike:.2f} ({pct_otm:.1f}% OTM, {ann_yield*100:.1f}% yield)",
+                    annotation_position="right"
+                )
+
+        fig_price.update_layout(
+            title=f'{ticker} Price Performance ({selected_period})',
+            xaxis_title='Date',
+            yaxis_title='Price ($)',
+            hovermode='x unified',
+            height=500
+        )
+
+        st.plotly_chart(fig_price, use_container_width=True)
+
+        # Dividend yield chart (if enabled)
+        if show_dividend_yield:
+            st.subheader("Dividend Yield Analysis")
+
+            try:
+                import yfinance as yf
+                stock = yf.Ticker(ticker)
+
+                # Get dividend history
+                dividends = stock.dividends
+                if not dividends.empty:
+                    # Filter to selected time period
+                    dividends_period = dividends[dividends.index >= pd.Timestamp(start_date)]
+
+                    # Calculate trailing 12-month dividend for each date
+                    div_yield_data = []
+                    for idx in price_history.index:
+                        # Get dividends in the past 12 months from this date
+                        past_year = idx - pd.Timedelta(days=365)
+                        trailing_divs = dividends[(dividends.index > past_year) & (dividends.index <= idx)]
+
+                        if len(trailing_divs) > 0 and idx in price_history.index:
+                            annual_div = trailing_divs.sum()
+                            price = price_history.loc[idx, 'Close']
+                            div_yield = (annual_div / price) * 100
+                            div_yield_data.append({'Date': idx, 'Yield': div_yield})
+
+                    if div_yield_data:
+                        df_div_yield = pd.DataFrame(div_yield_data)
+
+                        fig_div = go.Figure()
+
+                        fig_div.add_trace(go.Scatter(
+                            x=df_div_yield['Date'],
+                            y=df_div_yield['Yield'],
+                            mode='lines',
+                            name='Dividend Yield',
+                            line=dict(color='#2ca02c', width=2),
+                            fill='tozeroy',
+                            fillcolor='rgba(44, 160, 44, 0.1)'
+                        ))
+
+                        # Add current yield line
+                        if len(df_div_yield) > 0:
+                            current_yield = df_div_yield['Yield'].iloc[-1]
+                            fig_div.add_hline(
+                                y=current_yield,
+                                line_dash="dash",
+                                line_color="red",
+                                annotation_text=f"Current: {current_yield:.2f}%"
+                            )
+
+                        fig_div.update_layout(
+                            title=f'{ticker} Dividend Yield Over Time ({selected_period})',
+                            xaxis_title='Date',
+                            yaxis_title='Dividend Yield (%)',
+                            hovermode='x unified',
+                            height=400
+                        )
+
+                        st.plotly_chart(fig_div, use_container_width=True)
+
+                        # Yield statistics
+                        if len(df_div_yield) > 0:
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Current Yield", f"{df_div_yield['Yield'].iloc[-1]:.2f}%")
+                            with col2:
+                                st.metric("Average Yield", f"{df_div_yield['Yield'].mean():.2f}%")
+                            with col3:
+                                st.metric("Max Yield (period)", f"{df_div_yield['Yield'].max():.2f}%")
+                    else:
+                        st.info("Not enough dividend history to calculate yield over this period")
+                else:
+                    st.info(f"{ticker} does not pay dividends or dividend data is unavailable")
+
+            except Exception as e:
+                st.warning(f"Could not fetch dividend data: {str(e)}")
+
+        # Option details table
+        st.subheader("Option Details for Chart")
+        if filtered_metrics:
+            option_summary = []
+            for opt in filtered_metrics[:10]:
+                option_summary.append({
+                    'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
+                    'Strike': opt.contract.strike,
+                    '% OTM': f"{opt.moneyness * 100:.2f}%" if opt.moneyness else "N/A",
+                    'Ann. Yield': f"{opt.bid_annualized_premium_yield * 100:.2f}%" if opt.bid_annualized_premium_yield else "N/A",
+                    'Richness': f"{opt.richness_score:.2f}" if opt.richness_score else "N/A",
+                    'DTE': opt.dte
+                })
+
+            df_opt_summary = pd.DataFrame(option_summary)
+            st.dataframe(df_opt_summary, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error loading deep-dive data: {str(e)}")
+
+    st.divider()
+
+
 def main():
     """Main Streamlit application."""
+
+    # Initialize session state for storing scan results
+    if 'scan_results' not in st.session_state:
+        st.session_state.scan_results = None
+    if 'scan_timestamp' not in st.session_state:
+        st.session_state.scan_timestamp = None
 
     st.title("Options Analytics Platform")
     st.caption("Covered Call Scanner & Volatility Richness Analyzer")
@@ -857,9 +1053,30 @@ def main():
         st.sidebar.info("Using BS approximation for delta")
 
     st.sidebar.divider()
-    run_scan = st.sidebar.button("Run Scan", type="primary", use_container_width=True)
 
-    if run_scan:
+    # Display last scan timestamp if available
+    if st.session_state.scan_timestamp:
+        time_ago = datetime.now() - st.session_state.scan_timestamp
+        minutes_ago = int(time_ago.total_seconds() / 60)
+        if minutes_ago < 1:
+            time_str = "just now"
+        elif minutes_ago == 1:
+            time_str = "1 minute ago"
+        elif minutes_ago < 60:
+            time_str = f"{minutes_ago} minutes ago"
+        else:
+            hours_ago = minutes_ago // 60
+            time_str = f"{hours_ago} hour{'s' if hours_ago > 1 else ''} ago"
+
+        st.sidebar.info(f"Last scan: {time_str}")
+
+    col_scan1, col_scan2 = st.sidebar.columns(2)
+    with col_scan1:
+        run_scan = st.button("Run Scan", type="primary", use_container_width=True)
+    with col_scan2:
+        refresh_scan = st.button("Refresh Data", use_container_width=True)
+
+    if run_scan or refresh_scan:
         tickers = parse_tickers(ticker_input)
 
         if not tickers:
@@ -962,6 +1179,31 @@ def main():
         # Display cross-ticker leaderboard
         if len(all_ticker_results) > 0:
             display_leaderboard(all_ticker_results, hv_choice, use_bid_yield)
+
+        # Store results in session state
+        st.session_state.scan_results = all_ticker_results
+        st.session_state.scan_timestamp = datetime.now()
+
+        # Single Stock Deep Dive Section
+        if len(all_ticker_results) > 0:
+            st.divider()
+            st.header("Single Stock Deep Dive")
+
+            # Ticker selector
+            available_tickers = list(all_ticker_results.keys())
+            selected_ticker = st.selectbox(
+                "Select a ticker for detailed analysis:",
+                options=available_tickers,
+                index=0
+            )
+
+            if selected_ticker:
+                ticker_info = all_ticker_results[selected_ticker]
+                display_single_stock_deepdive(
+                    ticker=selected_ticker,
+                    ticker_data=ticker_info['ticker_data'],
+                    filtered_metrics=ticker_info['filtered_metrics']
+                )
 
     else:
         st.info("Configure your scan parameters in the sidebar and click 'Run Scan' to begin")
