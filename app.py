@@ -270,6 +270,7 @@ def create_options_dataframe(option_metrics: List[OptionMetrics], hv_label: str,
             'Ann. Yield': ann_yield,
             'Delta': opt.computed_delta,
             'Moneyness': opt.moneyness,
+            '% OTM': opt.moneyness * 100 if opt.moneyness is not None else None,
             'Strike vs 52W High': opt.strike_vs_52wk_high,
             'OI': opt.contract.open_interest,
             'Volume': opt.contract.volume,
@@ -357,7 +358,7 @@ def display_ticker_results(
     st.subheader("Top Opportunities by IV Richness")
     top_by_richness = df.nlargest(5, 'Richness') if 'Richness' in df.columns and not df['Richness'].isna().all() else df.head(5)
 
-    display_cols = ['Expiration', 'DTE', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High']
+    display_cols = ['Expiration', 'DTE', 'Strike', '% OTM', 'Bid', 'Ask', 'Mid', 'IV', hv_label, 'IV/HV', 'Richness', 'Gross Yield', 'Ann. Yield', 'Delta', 'Strike vs 52W High']
     display_df = top_by_richness[display_cols].copy()
 
     # Format numeric columns
@@ -375,6 +376,8 @@ def display_ticker_results(
         display_df['Ann. Yield'] = display_df['Ann. Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Delta' in display_df.columns:
         display_df['Delta'] = display_df['Delta'].apply(lambda x: format_number(x, 3) if pd.notna(x) else 'N/A')
+    if '% OTM' in display_df.columns:
+        display_df['% OTM'] = display_df['% OTM'].apply(lambda x: format_percentage(x / 100) if pd.notna(x) else 'N/A')
     if 'Strike vs 52W High' in display_df.columns:
         display_df['Strike vs 52W High'] = display_df['Strike vs 52W High'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
 
@@ -411,6 +414,8 @@ def display_ticker_results(
         display_df_yield['Ann. Yield'] = display_df_yield['Ann. Yield'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
     if 'Delta' in display_df_yield.columns:
         display_df_yield['Delta'] = display_df_yield['Delta'].apply(lambda x: format_number(x, 3) if pd.notna(x) else 'N/A')
+    if '% OTM' in display_df_yield.columns:
+        display_df_yield['% OTM'] = display_df_yield['% OTM'].apply(lambda x: format_percentage(x / 100) if pd.notna(x) else 'N/A')
     if 'Strike vs 52W High' in display_df_yield.columns:
         display_df_yield['Strike vs 52W High'] = display_df_yield['Strike vs 52W High'].apply(lambda x: format_percentage(x) if pd.notna(x) else 'N/A')
 
