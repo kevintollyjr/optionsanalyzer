@@ -1087,40 +1087,50 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
             try:
                 stock = yf.Ticker(ticker)
 
-                # Get dividend history
+                # Get dividend history and stock info
                 with st.spinner(f"Fetching dividend data for {ticker}..."):
                     dividends = stock.dividends
+                    info = stock.info
 
                 if dividends is not None and len(dividends) > 0:
-                    st.success(f"Found {len(dividends)} dividend payments")
+                    st.success(f"Found {len(dividends)} dividend payments in history")
 
-                    # Filter to selected time period
-                    start_timestamp = pd.Timestamp(start_date)
-                    dividends_period = dividends[dividends.index >= start_timestamp]
+                    # Get the most recent dividend payment (quarterly)
+                    last_dividend = dividends.iloc[-1]
 
-                    # Calculate trailing 12-month dividend for each date
+                    # Try to get indicated dividend from info (forward annual dividend rate)
+                    indicated_quarterly_div = None
+
+                    # Check for forward annual dividend rate, divide by 4 for quarterly
+                    if 'dividendRate' in info and info['dividendRate']:
+                        indicated_quarterly_div = info['dividendRate'] / 4.0
+
+                    # Use indicated dividend if available, otherwise use last paid dividend
+                    if indicated_quarterly_div and indicated_quarterly_div > 0:
+                        quarterly_div = indicated_quarterly_div
+                        div_source = f"Next indicated quarterly dividend: ${quarterly_div:.4f}"
+                    else:
+                        quarterly_div = last_dividend
+                        div_source = f"Last paid quarterly dividend: ${quarterly_div:.4f}"
+
+                    # Annualize the quarterly dividend
+                    annual_div = quarterly_div * 4.0
+
+                    st.info(f"{div_source} (Annualized: ${annual_div:.4f})")
+
+                    # Calculate yield for every day in the price history
                     div_yield_data = []
 
-                    # Sample every 5 days for performance
-                    sample_dates = price_history.index[::5]
+                    for idx in price_history.index:
+                        try:
+                            price = price_history.loc[idx, 'Adj Close']
+                            if price > 0:
+                                div_yield = (annual_div / price) * 100
+                                div_yield_data.append({'Date': idx, 'Yield': div_yield})
+                        except Exception as e:
+                            continue
 
-                    for idx in sample_dates:
-                        # Get dividends in the past 12 months from this date
-                        past_year = idx - pd.Timedelta(days=365)
-                        trailing_divs = dividends[(dividends.index > past_year) & (dividends.index <= idx)]
-
-                        if len(trailing_divs) > 0:
-                            try:
-                                annual_div = trailing_divs.sum()
-                                if idx in price_history.index:
-                                    price = price_history.loc[idx, 'Adj Close']
-                                    if price > 0:
-                                        div_yield = (annual_div / price) * 100
-                                        div_yield_data.append({'Date': idx, 'Yield': div_yield})
-                            except Exception as e:
-                                continue
-
-                    if len(div_yield_data) > 5:
+                    if len(div_yield_data) > 0:
                         df_div_yield = pd.DataFrame(div_yield_data)
 
                         fig_div = go.Figure()
@@ -1163,7 +1173,7 @@ def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metri
                         with col3:
                             st.metric("Max Yield (period)", f"{df_div_yield['Yield'].max():.2f}%")
                     else:
-                        st.info(f"Not enough dividend history to calculate yield over {selected_period} period")
+                        st.warning("Could not calculate dividend yield for the selected period")
                 else:
                     st.info(f"{ticker} does not pay dividends or dividend data is unavailable")
 
