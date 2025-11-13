@@ -133,6 +133,50 @@ def fetch_ticker_data(
         return None
 
 
+def display_data_health(ticker: str, ticker_data: Dict, all_metrics: List[OptionMetrics]):
+    """Display data health indicators for a ticker."""
+    underlying = ticker_data['underlying']
+    vol_metrics = ticker_data['volatility']
+    options = ticker_data['options']
+
+    st.markdown(f"#### Data Health: {ticker}")
+
+    health_col1, health_col2, health_col3, health_col4 = st.columns(4)
+
+    with health_col1:
+        if underlying:
+            st.success(f"Underlying: ${underlying.current_price:.2f}")
+        else:
+            st.error("Underlying fetch failed")
+
+    with health_col2:
+        if vol_metrics.data_end_date and vol_metrics.data_start_date:
+            days = (vol_metrics.data_end_date - vol_metrics.data_start_date).days
+            st.success(f"Historical: {days} days")
+        else:
+            st.warning("Limited historical data")
+
+    with health_col3:
+        if options:
+            # Calculate DTE range
+            min_dte_found = min((opt.contract.expiration.date() - date.today()).days for opt in all_metrics)
+            max_dte_found = max((opt.contract.expiration.date() - date.today()).days for opt in all_metrics)
+            st.success(f"Options: {len(options)} contracts ({min_dte_found}-{max_dte_found} DTE)")
+        else:
+            st.error("No options loaded")
+
+    with health_col4:
+        # Check IV missing percentage
+        total = len(all_metrics)
+        iv_missing = sum(1 for m in all_metrics if m.contract.implied_volatility is None)
+        if total > 0:
+            pct = (iv_missing / total) * 100
+            if pct > 0:
+                st.warning(f"IV missing: {pct:.1f}%")
+            else:
+                st.success("IV complete")
+
+
 def process_ticker_options(
     ticker_data: Dict,
     min_delta: Optional[float],
@@ -336,6 +380,16 @@ def display_ticker_results(
 
     st.dataframe(display_df, use_container_width=True)
 
+    # CSV Export for top richness table
+    csv_richness = display_df.to_csv(index=False)
+    st.download_button(
+        label="Download Top Richness as CSV",
+        data=csv_richness,
+        file_name=f"{ticker}_top_richness_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        key=f"csv_{ticker}_richness"
+    )
+
     # Top opportunities by Annualized Yield
     st.subheader("Top Opportunities by Annualized Yield")
     top_by_yield = df.nlargest(5, 'Ann. Yield') if 'Ann. Yield' in df.columns and not df['Ann. Yield'].isna().all() else df.head(5)
@@ -362,9 +416,29 @@ def display_ticker_results(
 
     st.dataframe(display_df_yield, use_container_width=True)
 
+    # CSV Export for top yield table
+    csv_yield = display_df_yield.to_csv(index=False)
+    st.download_button(
+        label="Download Top Yield as CSV",
+        data=csv_yield,
+        file_name=f"{ticker}_top_yield_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv",
+        key=f"csv_{ticker}_yield"
+    )
+
     # Full data table
     with st.expander(f"View All {len(df)} Options (Sortable Table)"):
         st.dataframe(df, use_container_width=True, height=400)
+
+        # CSV Export for full table
+        csv_full = df.to_csv(index=False)
+        st.download_button(
+            label="Download Full Table as CSV",
+            data=csv_full,
+            file_name=f"{ticker}_full_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv",
+            key=f"csv_{ticker}_full"
+        )
 
     # Charts
     st.subheader("Visual Analytics")
@@ -583,6 +657,97 @@ def display_cross_ticker_regression(all_ticker_results: Dict):
     st.divider()
 
 
+def display_leaderboard(all_ticker_results: Dict, hv_choice: str, use_bid_yield: bool):
+    """Display cross-ticker leaderboard view."""
+    st.header("Cross-Ticker Leaderboard")
+
+    # Aggregate all options
+    all_options = []
+    for ticker, data in all_ticker_results.items():
+        underlying = data['ticker_data']['underlying']
+        vol_metrics = data['ticker_data']['volatility']
+
+        # Get HV reference based on choice
+        if hv_choice == '3m':
+            hv_ref = vol_metrics.hv_3m
+        elif hv_choice == '1m':
+            hv_ref = vol_metrics.hv_1m
+        else:
+            hv_ref = vol_metrics.hv_1y
+
+        for opt in data['filtered_metrics']:
+            if use_bid_yield:
+                gross_yield = opt.bid_premium_yield
+                ann_yield = opt.bid_annualized_premium_yield
+            else:
+                gross_yield = opt.premium_yield
+                ann_yield = opt.annualized_premium_yield
+
+            moneyness_pct = opt.moneyness * 100 if opt.moneyness else None
+
+            all_options.append({
+                'Ticker': ticker,
+                'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
+                'DTE': opt.dte,
+                'Strike': opt.contract.strike,
+                '% OTM': moneyness_pct,
+                'IV': opt.contract.implied_volatility,
+                'HV': hv_ref,
+                'IV/HV': opt.iv_to_hv_ratio,
+                'Richness': opt.richness_score,
+                'Gross Yield': gross_yield,
+                'Ann. Yield': ann_yield,
+                'Delta': opt.computed_delta,
+                'OI': opt.contract.open_interest,
+                'Volume': opt.contract.volume
+            })
+
+    if not all_options:
+        st.warning("No options to display in leaderboard")
+        return
+
+    df_leader = pd.DataFrame(all_options)
+
+    # Filters
+    st.subheader("Leaderboard Filters")
+    filter_col1, filter_col2, filter_col3 = st.columns(3)
+
+    with filter_col1:
+        selected_tickers = st.multiselect(
+            "Filter tickers:",
+            options=sorted(df_leader['Ticker'].unique()),
+            default=sorted(df_leader['Ticker'].unique())
+        )
+
+    with filter_col2:
+        min_richness = st.number_input("Min Richness (IV/HV)", min_value=0.0, value=1.0, step=0.1)
+
+    with filter_col3:
+        min_ann_yield = st.number_input("Min Ann. Yield", min_value=0.0, value=0.0, step=0.05)
+
+    # Apply filters
+    df_filtered = df_leader[
+        (df_leader['Ticker'].isin(selected_tickers)) &
+        (df_leader['Richness'] >= min_richness) &
+        (df_leader['Ann. Yield'] >= min_ann_yield)
+    ]
+
+    # Sort by richness descending
+    df_filtered = df_filtered.sort_values('Richness', ascending=False)
+
+    # Display
+    st.dataframe(df_filtered, use_container_width=True, height=600)
+
+    # CSV Export
+    csv = df_filtered.to_csv(index=False)
+    st.download_button(
+        label="Download Leaderboard as CSV",
+        data=csv,
+        file_name=f"leaderboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+        mime="text/csv"
+    )
+
+
 def main():
     """Main Streamlit application."""
 
@@ -658,6 +823,25 @@ def main():
         help="Choose whether to calculate yields using bid price (conservative) or midpoint (optimistic)"
     )[1]
 
+    st.sidebar.subheader("Missing Data Handling")
+
+    iv_missing_mode = st.sidebar.radio(
+        "When IV is missing:",
+        options=["Drop option", "Use ATM IV proxy", "Interpolate"],
+        index=1,
+        help="How to handle options with missing implied volatility"
+    )
+
+    delta_missing_mode = st.sidebar.radio(
+        "When Delta is missing:",
+        options=["Disable delta filter", "Use Black-Scholes approx"],
+        index=1,
+        help="How to handle options with missing delta values"
+    )
+
+    if delta_missing_mode == "Use Black-Scholes approx":
+        st.sidebar.info("Using BS approximation for delta")
+
     st.sidebar.divider()
     run_scan = st.sidebar.button("Run Scan", type="primary", use_container_width=True)
 
@@ -707,6 +891,33 @@ def main():
 
         # Process and display results for each ticker
         for ticker, ticker_data in results.items():
+            # Compute all metrics for data health check
+            underlying = ticker_data['underlying']
+            vol_metrics = ticker_data['volatility']
+            options = ticker_data['options']
+
+            # Compute all option metrics (before filtering)
+            if hv_choice == '3m':
+                hv_reference = vol_metrics.hv_3m
+            elif hv_choice == '1m':
+                hv_reference = vol_metrics.hv_1m
+            else:
+                hv_reference = vol_metrics.hv_1y
+
+            all_metrics = []
+            for contract in options:
+                metrics = compute_option_metrics(
+                    contract=contract,
+                    underlying_price=underlying.current_price,
+                    hv_reference=hv_reference,
+                    week_52_high=underlying.week_52_high
+                )
+                all_metrics.append(metrics)
+
+            # Display data health before filtering
+            display_data_health(ticker, ticker_data, all_metrics)
+
+            # Now apply filters
             filtered_metrics = process_ticker_options(
                 ticker_data=ticker_data,
                 min_delta=min_delta,
@@ -733,6 +944,10 @@ def main():
         # Display cross-ticker regression analysis
         if len(all_ticker_results) > 0:
             display_cross_ticker_regression(all_ticker_results)
+
+        # Display cross-ticker leaderboard
+        if len(all_ticker_results) > 0:
+            display_leaderboard(all_ticker_results, hv_choice, use_bid_yield)
 
     else:
         st.info("Configure your scan parameters in the sidebar and click 'Run Scan' to begin")
