@@ -1044,66 +1044,6 @@ def display_top_scores_cross_ticker(
     st.divider()
 
 
-def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metrics: List[OptionMetrics]):
-    """Display detailed single-stock analysis showing top option opportunities."""
-    st.header(f"Single Stock Deep Dive: {ticker}")
-
-    underlying = ticker_data['underlying']
-    volatility = ticker_data['volatility']
-
-    # Display underlying metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Current Price", f"${underlying.current_price:.2f}")
-    with col2:
-        if underlying.week_52_high:
-            pct_from_high = ((underlying.current_price / underlying.week_52_high) - 1) * 100
-            st.metric("52W High", f"${underlying.week_52_high:.2f}", f"{pct_from_high:+.1f}%")
-    with col3:
-        st.metric("HV (1Y)", f"{volatility.hv_1y * 100:.1f}%")
-    with col4:
-        st.metric("HV (3M)", f"{volatility.hv_3m * 100:.1f}%")
-
-    st.divider()
-
-    # Option details table
-    st.subheader("Top Option Opportunities")
-    if filtered_metrics:
-        option_summary = []
-        for opt in filtered_metrics[:20]:  # Show top 20
-            option_summary.append({
-                'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
-                'DTE': opt.dte,
-                'Strike': f"${opt.contract.strike:.2f}",
-                '% OTM': f"{opt.moneyness * 100:.2f}%" if opt.moneyness else "N/A",
-                'Bid': f"${opt.contract.bid:.2f}" if opt.contract.bid else "N/A",
-                'Ask': f"${opt.contract.ask:.2f}" if opt.contract.ask else "N/A",
-                'IV': f"{opt.contract.implied_volatility * 100:.1f}%" if opt.contract.implied_volatility else "N/A",
-                'IV/HV': f"{opt.iv_to_hv_ratio:.2f}" if opt.iv_to_hv_ratio else "N/A",
-                'Richness': f"{opt.richness_score:.2f}" if opt.richness_score else "N/A",
-                'Ann. Yield': f"{opt.bid_annualized_premium_yield * 100:.2f}%" if opt.bid_annualized_premium_yield else "N/A",
-                'Delta': f"{opt.approx_delta:.3f}" if opt.approx_delta else "N/A",
-                'OI': opt.contract.open_interest if opt.contract.open_interest else 0,
-                'Volume': opt.contract.volume if opt.contract.volume else 0
-            })
-
-        df_opt_summary = pd.DataFrame(option_summary)
-        st.dataframe(df_opt_summary, use_container_width=True, height=600)
-
-        # Export to CSV
-        csv = df_opt_summary.to_csv(index=False)
-        st.download_button(
-            label=f"Download {ticker} Options as CSV",
-            data=csv,
-            file_name=f"{ticker}_options_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
-    else:
-        st.info("No options match the current filter criteria")
-
-    st.divider()
-
-
 def main():
     """Main Streamlit application."""
 
@@ -1119,8 +1059,37 @@ def main():
     st.title("Options Analytics Platform")
     st.caption("Covered Call Scanner & Volatility Richness Analyzer")
 
-    # Data source indicator
-    st.info("📊 **Data Source:** Yahoo Finance (yfinance) | Real-time market data with 15-minute delay")
+    # Data source indicator with alternative options
+    with st.expander("📊 Data Source Information", expanded=False):
+        st.markdown("""
+**Current Source:** Yahoo Finance (yfinance)
+- Real-time market data with 15-minute delay
+- Free, unlimited API access
+- Comprehensive US options coverage
+
+---
+
+**Alternative Data Sources for Cross-Validation:**
+
+For production use or data validation, consider these alternatives:
+
+**Free/Freemium Tier Available:**
+- **Alpha Vantage** - 25 requests/day free, includes options data, IV, and Greeks
+- **Market Data** (marketdata.app) - 100 requests/day free, option chains back to 2005
+- **Polygon.io** - 5 API calls/min free tier (limited), premium from $199/month
+- **Tradier** - Free sandbox for development, live data requires brokerage account
+
+**Paid Services:**
+- **Intrinio** - Professional-grade data with free trial
+- **CBOE DataShop** - Official exchange data
+- **Interactive Brokers API** - Real-time with brokerage account
+
+**Note:** Cross-validation feature with multiple data sources can be implemented if needed.
+Contact the developer to add multi-source data validation.
+        """)
+
+    # Quick status indicator
+    st.info("🟢 **Active:** Yahoo Finance (yfinance) | 15-min delayed quotes")
 
     # Sidebar configuration
     st.sidebar.header("Configuration")
@@ -1556,29 +1525,7 @@ Final Score = (score_A × wA + score_B × wB + score_C × wC) / total_weight
         st.session_state.scan_results = all_ticker_results
         st.session_state.scan_timestamp = datetime.now()
 
-    # Single Stock Deep Dive Section (outside scan block to persist across reruns)
-    if st.session_state.scan_results and len(st.session_state.scan_results) > 0:
-        st.divider()
-        st.header("Single Stock Deep Dive")
-
-        # Ticker selector
-        available_tickers = list(st.session_state.scan_results.keys())
-        selected_ticker = st.selectbox(
-            "Select a ticker for detailed analysis:",
-            options=available_tickers,
-            index=0,
-            key="deep_dive_ticker_selector"
-        )
-
-        if selected_ticker:
-            ticker_info = st.session_state.scan_results[selected_ticker]
-            display_single_stock_deepdive(
-                ticker=selected_ticker,
-                ticker_data=ticker_info['ticker_data'],
-                filtered_metrics=ticker_info['filtered_metrics']
-            )
-
-    elif not (run_scan or refresh_scan):
+    if not (run_scan or refresh_scan):
         st.info("Configure your scan parameters in the sidebar and click 'Run Scan' to begin")
 
         st.subheader("Features")
