@@ -14,6 +14,8 @@ from typing import List, Dict, Optional
 import plotly.graph_objects as go
 import plotly.express as px
 from sklearn.linear_model import LinearRegression
+import json
+from pathlib import Path
 
 from data_provider import get_default_provider, UnderlyingData
 from volatility import compute_volatility_metrics, VolatilityMetrics, format_volatility_pct
@@ -33,6 +35,61 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+# Settings management functions
+SETTINGS_DIR = Path.home() / ".optionsanalyzer"
+SETTINGS_FILE = SETTINGS_DIR / "settings.json"
+
+
+def save_settings(settings: Dict) -> None:
+    """Save settings to a JSON file."""
+    try:
+        SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+    except Exception as e:
+        st.error(f"Failed to save settings: {str(e)}")
+
+
+def load_settings() -> Optional[Dict]:
+    """Load settings from JSON file."""
+    try:
+        if SETTINGS_FILE.exists():
+            with open(SETTINGS_FILE, 'r') as f:
+                return json.load(f)
+        return None
+    except Exception as e:
+        st.error(f"Failed to load settings: {str(e)}")
+        return None
+
+
+def get_default_settings() -> Dict:
+    """Return default settings."""
+    return {
+        'min_delta': 0.15,
+        'max_delta': 0.30,
+        'min_dte': 5,
+        'max_dte': 90,
+        'otm_only': True,
+        'enable_oi_filter': True,
+        'min_open_interest': 100,
+        'enable_volume_filter': False,
+        'min_volume': 10,
+        'enable_spread_filter': True,
+        'max_spread_pct': 15.0,
+        'hv_choice': '3m',
+        'use_bid_yield': True,
+        'delta_missing_mode': 'Use Black-Scholes approx',
+        'enable_scoring': False,
+        'weight_yield': 1.0,
+        'weight_richness': 1.0,
+        'weight_upside': 1.0,
+        'top_n_scores': 20,
+        'enable_strike_filter': False,
+        'min_strike': 0.0,
+        'max_strike': 1000.0
+    }
 
 # Clean, professional styling
 st.markdown("""
@@ -988,194 +1045,61 @@ def display_top_scores_cross_ticker(
 
 
 def display_single_stock_deepdive(ticker: str, ticker_data: Dict, filtered_metrics: List[OptionMetrics]):
-    """Display detailed single-stock analysis with price charts and option overlays."""
+    """Display detailed single-stock analysis showing top option opportunities."""
     st.header(f"Single Stock Deep Dive: {ticker}")
 
     underlying = ticker_data['underlying']
+    volatility = ticker_data['volatility']
 
-    # Time period selector
-    st.subheader("Price Performance Analysis")
-    time_periods = {
-        '5Y': 1825,
-        '1Y': 365,
-        'YTD': None,  # Special handling
-        '6M': 180,
-        '3M': 90,
-        '1M': 30
-    }
+    # Display underlying metrics
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Current Price", f"${underlying.current_price:.2f}")
+    with col2:
+        if underlying.week_52_high:
+            pct_from_high = ((underlying.current_price / underlying.week_52_high) - 1) * 100
+            st.metric("52W High", f"${underlying.week_52_high:.2f}", f"{pct_from_high:+.1f}%")
+    with col3:
+        st.metric("HV (1Y)", f"{volatility.hv_1y * 100:.1f}%")
+    with col4:
+        st.metric("HV (3M)", f"{volatility.hv_3m * 100:.1f}%")
 
-    col_period1, col_period2 = st.columns([3, 1])
-    with col_period1:
-        selected_period = st.radio(
-            "Select time period:",
-            options=list(time_periods.keys()),
-            horizontal=True,
-            index=2  # Default to YTD
+    st.divider()
+
+    # Option details table
+    st.subheader("Top Option Opportunities")
+    if filtered_metrics:
+        option_summary = []
+        for opt in filtered_metrics[:20]:  # Show top 20
+            option_summary.append({
+                'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
+                'DTE': opt.dte,
+                'Strike': f"${opt.contract.strike:.2f}",
+                '% OTM': f"{opt.moneyness * 100:.2f}%" if opt.moneyness else "N/A",
+                'Bid': f"${opt.contract.bid:.2f}" if opt.contract.bid else "N/A",
+                'Ask': f"${opt.contract.ask:.2f}" if opt.contract.ask else "N/A",
+                'IV': f"{opt.contract.implied_volatility * 100:.1f}%" if opt.contract.implied_volatility else "N/A",
+                'IV/HV': f"{opt.iv_to_hv_ratio:.2f}" if opt.iv_to_hv_ratio else "N/A",
+                'Richness': f"{opt.richness_score:.2f}" if opt.richness_score else "N/A",
+                'Ann. Yield': f"{opt.bid_annualized_premium_yield * 100:.2f}%" if opt.bid_annualized_premium_yield else "N/A",
+                'Delta': f"{opt.approx_delta:.3f}" if opt.approx_delta else "N/A",
+                'OI': opt.contract.open_interest if opt.contract.open_interest else 0,
+                'Volume': opt.contract.volume if opt.contract.volume else 0
+            })
+
+        df_opt_summary = pd.DataFrame(option_summary)
+        st.dataframe(df_opt_summary, use_container_width=True, height=600)
+
+        # Export to CSV
+        csv = df_opt_summary.to_csv(index=False)
+        st.download_button(
+            label=f"Download {ticker} Options as CSV",
+            data=csv,
+            file_name=f"{ticker}_options_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
         )
-
-    with col_period2:
-        show_dividend_yield = st.checkbox("Show Dividend Yield Chart", value=False)
-
-    # Fetch historical data for the selected period
-    end_date = date.today()
-    if selected_period == 'YTD':
-        start_date = date(end_date.year, 1, 1)
     else:
-        days = time_periods[selected_period]
-        start_date = end_date - timedelta(days=days)
-
-    try:
-        from data_provider import get_default_provider
-        import yfinance as yf
-        provider = get_default_provider()
-
-        # Fetch price history
-        with st.spinner(f"Fetching {selected_period} price data for {ticker}..."):
-            try:
-                price_history = provider.fetch_historical_prices(ticker, start_date, end_date)
-            except Exception as e:
-                st.error(f"Failed to fetch price history: {str(e)}")
-                return
-
-        if price_history is None or price_history.empty:
-            st.warning(f"No price history available for {ticker}")
-            return
-
-        # Create price chart
-        fig_price = go.Figure()
-
-        fig_price.add_trace(go.Scatter(
-            x=price_history.index,
-            y=price_history['Adj Close'],
-            mode='lines',
-            name='Price',
-            line=dict(color='#1f77b4', width=2)
-        ))
-
-        fig_price.update_layout(
-            title=f'{ticker} Price Performance ({selected_period})',
-            xaxis_title='Date',
-            yaxis_title='Price ($)',
-            hovermode='x unified',
-            height=500
-        )
-
-        st.plotly_chart(fig_price, use_container_width=True)
-
-        # Dividend yield chart (if enabled)
-        if show_dividend_yield:
-            st.subheader("Dividend Yield Analysis")
-
-            try:
-                stock = yf.Ticker(ticker)
-
-                # Get dividend history and stock info
-                with st.spinner(f"Fetching dividend data for {ticker}..."):
-                    dividends = stock.dividends
-                    info = stock.info
-
-                if dividends is not None and len(dividends) > 0:
-                    st.success(f"Found {len(dividends)} dividend payments in history")
-
-                    # Calculate yield for every day in the price history
-                    # For each date, use the most recent dividend payment as of that date
-                    div_yield_data = []
-
-                    for idx in price_history.index:
-                        try:
-                            # Get the price on this date
-                            price = price_history.loc[idx, 'Adj Close']
-                            if price <= 0:
-                                continue
-
-                            # Find the most recent dividend payment as of this date
-                            # Get all dividends that were paid on or before this date
-                            past_dividends = dividends[dividends.index <= idx]
-
-                            if len(past_dividends) > 0:
-                                # Use the most recent dividend as the quarterly amount
-                                quarterly_div = past_dividends.iloc[-1]
-
-                                # Annualize the quarterly dividend (× 4)
-                                annual_div = quarterly_div * 4.0
-
-                                # Calculate yield: (annualized_dividend / price) × 100
-                                div_yield = (annual_div / price) * 100
-                                div_yield_data.append({'Date': idx, 'Yield': div_yield})
-                        except Exception as e:
-                            continue
-
-                    if len(div_yield_data) > 0:
-                        df_div_yield = pd.DataFrame(div_yield_data)
-
-                        fig_div = go.Figure()
-
-                        fig_div.add_trace(go.Scatter(
-                            x=df_div_yield['Date'],
-                            y=df_div_yield['Yield'],
-                            mode='lines',
-                            name='Dividend Yield',
-                            line=dict(color='#2ca02c', width=2),
-                            fill='tozeroy',
-                            fillcolor='rgba(44, 160, 44, 0.1)'
-                        ))
-
-                        # Add current yield line
-                        current_yield = df_div_yield['Yield'].iloc[-1]
-                        fig_div.add_hline(
-                            y=current_yield,
-                            line_dash="dash",
-                            line_color="red",
-                            annotation_text=f"Current: {current_yield:.2f}%"
-                        )
-
-                        fig_div.update_layout(
-                            title=f'{ticker} Dividend Yield Over Time ({selected_period})',
-                            xaxis_title='Date',
-                            yaxis_title='Dividend Yield (%)',
-                            hovermode='x unified',
-                            height=400
-                        )
-
-                        st.plotly_chart(fig_div, use_container_width=True)
-
-                        # Yield statistics
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Current Yield", f"{df_div_yield['Yield'].iloc[-1]:.2f}%")
-                        with col2:
-                            st.metric("Average Yield", f"{df_div_yield['Yield'].mean():.2f}%")
-                        with col3:
-                            st.metric("Max Yield (period)", f"{df_div_yield['Yield'].max():.2f}%")
-                    else:
-                        st.warning("Could not calculate dividend yield for the selected period")
-                else:
-                    st.info(f"{ticker} does not pay dividends or dividend data is unavailable")
-
-            except Exception as e:
-                st.error(f"Error fetching dividend data: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
-
-        # Option details table
-        st.subheader("Option Details for Chart")
-        if filtered_metrics:
-            option_summary = []
-            for opt in filtered_metrics[:10]:
-                option_summary.append({
-                    'Expiration': opt.contract.expiration.strftime('%Y-%m-%d'),
-                    'Strike': opt.contract.strike,
-                    '% OTM': f"{opt.moneyness * 100:.2f}%" if opt.moneyness else "N/A",
-                    'Ann. Yield': f"{opt.bid_annualized_premium_yield * 100:.2f}%" if opt.bid_annualized_premium_yield else "N/A",
-                    'Richness': f"{opt.richness_score:.2f}" if opt.richness_score else "N/A",
-                    'DTE': opt.dte
-                })
-
-            df_opt_summary = pd.DataFrame(option_summary)
-            st.dataframe(df_opt_summary, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Error loading deep-dive data: {str(e)}")
+        st.info("No options match the current filter criteria")
 
     st.divider()
 
@@ -1188,12 +1112,77 @@ def main():
         st.session_state.scan_results = None
     if 'scan_timestamp' not in st.session_state:
         st.session_state.scan_timestamp = None
+    if 'settings_loaded' not in st.session_state:
+        st.session_state.settings_loaded = False
+        st.session_state.current_settings = get_default_settings()
 
     st.title("Options Analytics Platform")
     st.caption("Covered Call Scanner & Volatility Richness Analyzer")
 
+    # Data source indicator
+    st.info("📊 **Data Source:** Yahoo Finance (yfinance) | Real-time market data with 15-minute delay")
+
     # Sidebar configuration
     st.sidebar.header("Configuration")
+
+    # Settings Management Section
+    with st.sidebar.expander("⚙️ Settings Management", expanded=False):
+        st.markdown("**Save/Load Templates**")
+
+        col_set1, col_set2 = st.columns(2)
+        with col_set1:
+            if st.button("💾 Save Current", use_container_width=True):
+                current_settings = {
+                    'min_delta': st.session_state.get('min_delta', 0.15),
+                    'max_delta': st.session_state.get('max_delta', 0.30),
+                    'min_dte': st.session_state.get('min_dte', 5),
+                    'max_dte': st.session_state.get('max_dte', 90),
+                    'otm_only': st.session_state.get('otm_only', True),
+                    'enable_oi_filter': st.session_state.get('enable_oi_filter', True),
+                    'min_open_interest': st.session_state.get('min_open_interest', 100),
+                    'enable_volume_filter': st.session_state.get('enable_volume_filter', False),
+                    'min_volume': st.session_state.get('min_volume', 10),
+                    'enable_spread_filter': st.session_state.get('enable_spread_filter', True),
+                    'max_spread_pct': st.session_state.get('max_spread_pct', 15.0),
+                    'hv_choice': st.session_state.get('hv_choice', '3m'),
+                    'use_bid_yield': st.session_state.get('use_bid_yield', True),
+                    'delta_missing_mode': st.session_state.get('delta_missing_mode', 'Use Black-Scholes approx'),
+                    'enable_scoring': st.session_state.get('enable_scoring', False),
+                    'weight_yield': st.session_state.get('weight_yield', 1.0),
+                    'weight_richness': st.session_state.get('weight_richness', 1.0),
+                    'weight_upside': st.session_state.get('weight_upside', 1.0),
+                    'top_n_scores': st.session_state.get('top_n_scores', 20)
+                }
+                save_settings(current_settings)
+                st.success("Settings saved!")
+
+        with col_set2:
+            if st.button("📂 Load Saved", use_container_width=True):
+                loaded = load_settings()
+                if loaded:
+                    st.session_state.current_settings = loaded
+                    st.session_state.settings_loaded = True
+                    st.success("Settings loaded!")
+                    st.rerun()
+                else:
+                    st.warning("No saved settings found")
+
+        if st.button("🔄 Reset to Defaults", use_container_width=True):
+            st.session_state.current_settings = get_default_settings()
+            st.session_state.settings_loaded = True
+            st.success("Reset to defaults!")
+            st.rerun()
+
+        # Show settings file location
+        st.caption(f"Settings file: `{SETTINGS_FILE}`")
+
+    st.sidebar.divider()
+
+    # Load settings if available
+    if st.session_state.settings_loaded:
+        saved_settings = st.session_state.current_settings
+    else:
+        saved_settings = get_default_settings()
 
     ticker_input = st.sidebar.text_input(
         "Tickers (comma-separated)",
@@ -1204,60 +1193,68 @@ def main():
     st.sidebar.subheader("Delta Range")
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        min_delta = st.number_input("Min Delta", min_value=0.0, max_value=1.0, value=0.15, step=0.05)
+        min_delta = st.number_input("Min Delta", min_value=0.0, max_value=1.0, value=saved_settings.get('min_delta', 0.15), step=0.05, key='min_delta')
     with col2:
-        max_delta = st.number_input("Max Delta", min_value=0.0, max_value=1.0, value=0.30, step=0.05)
+        max_delta = st.number_input("Max Delta", min_value=0.0, max_value=1.0, value=saved_settings.get('max_delta', 0.30), step=0.05, key='max_delta')
 
     st.sidebar.subheader("Expiration Range (DTE)")
     col3, col4 = st.sidebar.columns(2)
     with col3:
-        min_dte = st.number_input("Min DTE", min_value=1, max_value=730, value=5, step=1)
+        min_dte = st.number_input("Min DTE", min_value=1, max_value=730, value=saved_settings.get('min_dte', 5), step=1, key='min_dte')
     with col4:
-        max_dte = st.number_input("Max DTE", min_value=1, max_value=730, value=90, step=1)
+        max_dte = st.number_input("Max DTE", min_value=1, max_value=730, value=saved_settings.get('max_dte', 90), step=1, key='max_dte')
 
     st.sidebar.subheader("Strike Price Range")
-    enable_strike_filter = st.sidebar.checkbox("Enable Strike Price Filter", value=False)
+    enable_strike_filter = st.sidebar.checkbox("Enable Strike Price Filter", value=saved_settings.get('enable_strike_filter', False), key='enable_strike_filter')
     min_strike = None
     max_strike = None
     if enable_strike_filter:
         col5, col6 = st.sidebar.columns(2)
         with col5:
-            min_strike = st.number_input("Min Strike", min_value=0.0, value=0.0, step=1.0)
+            min_strike = st.number_input("Min Strike", min_value=0.0, value=saved_settings.get('min_strike', 0.0), step=1.0)
         with col6:
-            max_strike = st.number_input("Max Strike", min_value=0.0, value=1000.0, step=1.0)
+            max_strike = st.number_input("Max Strike", min_value=0.0, value=saved_settings.get('max_strike', 1000.0), step=1.0)
 
     st.sidebar.subheader("Liquidity Filters")
 
-    otm_only = st.sidebar.checkbox("OTM Only", value=True, help="Only show out-of-the-money options")
+    otm_only = st.sidebar.checkbox("OTM Only", value=saved_settings.get('otm_only', True), key='otm_only', help="Only show out-of-the-money options")
 
-    enable_oi_filter = st.sidebar.checkbox("Filter by Open Interest", value=True)
+    enable_oi_filter = st.sidebar.checkbox("Filter by Open Interest", value=saved_settings.get('enable_oi_filter', True), key='enable_oi_filter')
     min_open_interest = None
     if enable_oi_filter:
-        min_open_interest = st.sidebar.number_input("Min Open Interest", min_value=0, value=100, step=10)
+        min_open_interest = st.sidebar.number_input("Min Open Interest", min_value=0, value=saved_settings.get('min_open_interest', 100), step=10, key='min_open_interest')
 
-    enable_volume_filter = st.sidebar.checkbox("Filter by Volume", value=False)
+    enable_volume_filter = st.sidebar.checkbox("Filter by Volume", value=saved_settings.get('enable_volume_filter', False), key='enable_volume_filter')
     min_volume = None
     if enable_volume_filter:
-        min_volume = st.sidebar.number_input("Min Volume", min_value=0, value=10, step=5)
+        min_volume = st.sidebar.number_input("Min Volume", min_value=0, value=saved_settings.get('min_volume', 10), step=5, key='min_volume')
 
-    enable_spread_filter = st.sidebar.checkbox("Filter by Bid-Ask Spread", value=True)
+    enable_spread_filter = st.sidebar.checkbox("Filter by Bid-Ask Spread", value=saved_settings.get('enable_spread_filter', True), key='enable_spread_filter')
     max_spread_pct = None
     if enable_spread_filter:
-        max_spread_pct = st.sidebar.number_input("Max Spread %", min_value=0.0, max_value=100.0, value=15.0, step=1.0)
+        max_spread_pct = st.sidebar.number_input("Max Spread %", min_value=0.0, max_value=100.0, value=saved_settings.get('max_spread_pct', 15.0), step=1.0, key='max_spread_pct')
 
     st.sidebar.subheader("Volatility & Yield")
+
+    hv_options = ['1y', '3m', '1m']
+    default_hv = saved_settings.get('hv_choice', '3m')
+    hv_index = hv_options.index(default_hv) if default_hv in hv_options else 1
+
     hv_choice = st.sidebar.selectbox(
         "HV Reference Period",
-        options=['1y', '3m', '1m'],
-        index=0,
+        options=hv_options,
+        index=hv_index,
+        key='hv_choice',
         help="Which historical volatility period to use for IV comparisons"
     )
 
+    use_bid_yield_default = saved_settings.get('use_bid_yield', True)
     use_bid_yield = st.sidebar.radio(
         "Calculate yields based on:",
         options=[("Midpoint (Bid+Ask)/2", False), ("Bid Price", True)],
         format_func=lambda x: x[0],
-        index=1,
+        index=1 if use_bid_yield_default else 0,
+        key='use_bid_yield_radio',
         help="Choose whether to calculate yields using bid price (conservative) or midpoint (optimistic)"
     )[1]
 
@@ -1270,10 +1267,15 @@ def main():
         help="How to handle options with missing implied volatility"
     )
 
+    delta_options = ["Disable delta filter", "Use Black-Scholes approx"]
+    default_delta_mode = saved_settings.get('delta_missing_mode', 'Use Black-Scholes approx')
+    delta_index = delta_options.index(default_delta_mode) if default_delta_mode in delta_options else 1
+
     delta_missing_mode = st.sidebar.radio(
         "When Delta is missing:",
-        options=["Disable delta filter", "Use Black-Scholes approx"],
-        index=1,
+        options=delta_options,
+        index=delta_index,
+        key='delta_missing_mode',
         help="How to handle options with missing delta values"
     )
 
@@ -1284,19 +1286,73 @@ def main():
 
     enable_scoring = st.sidebar.checkbox(
         "Enable Composite Scoring",
-        value=False,
+        value=saved_settings.get('enable_scoring', False),
+        key='enable_scoring',
         help="Calculate a weighted composite score for each option based on vol-adjusted yield, IV richness, and upside sacrifice"
     )
 
     if enable_scoring:
+        # Detailed scoring help documentation
+        with st.sidebar.expander("ℹ️ How Scoring Works"):
+            st.markdown("""
+**Composite Score Formula:**
+
+The final score (0-100) is a weighted average of three components:
+
+---
+
+**Component A: Vol-Adjusted Yield**
+```
+premium_yield = (option_premium / stock_price) × 100
+time_fraction = DTE / 365
+expected_move = HV × 100 × √time_fraction
+
+vol_adjusted_yield = premium_yield / expected_move
+score_A = min(vol_adjusted_yield / 2.0, 1.0) × 100
+```
+*Measures: Yield per unit of expected stock movement*
+
+---
+
+**Component B: IV Richness**
+```
+iv_hv_ratio = IV / HV
+
+score_B = min(max((iv_hv_ratio - 0.8) / 0.7, 0), 1.0) × 100
+```
+*Measures: How expensive the option is (IV > HV = rich)*
+
+---
+
+**Component C: Upside Sacrifice**
+```
+pct_OTM = ((strike - price) / price) × 100
+
+score_C = min(pct_OTM / 10.0, 1.0) × 100
+```
+*Measures: How much upside potential you keep*
+
+---
+
+**Final Score:**
+```
+total_weight = wA + wB + wC
+
+Final Score = (score_A × wA + score_B × wB + score_C × wC) / total_weight
+```
+
+**Higher scores = Better opportunities**
+            """)
+
         st.sidebar.markdown("**Score Component Weights:**")
 
         weight_yield = st.sidebar.slider(
             "A) Vol-Adjusted Yield",
             min_value=0.0,
             max_value=3.0,
-            value=1.0,
+            value=saved_settings.get('weight_yield', 1.0),
             step=0.1,
+            key='weight_yield',
             help="Weight for premium yield vs expected price movement (higher = prioritize yield per unit of risk)"
         )
 
@@ -1304,8 +1360,9 @@ def main():
             "B) IV Richness (IV/HV)",
             min_value=0.0,
             max_value=3.0,
-            value=1.0,
+            value=saved_settings.get('weight_richness', 1.0),
             step=0.1,
+            key='weight_richness',
             help="Weight for implied vs historical volatility (higher = prioritize selling expensive options)"
         )
 
@@ -1313,8 +1370,9 @@ def main():
             "C) Upside Sacrifice (% OTM)",
             min_value=0.0,
             max_value=3.0,
-            value=1.0,
+            value=saved_settings.get('weight_upside', 1.0),
             step=0.1,
+            key='weight_upside',
             help="Weight for how far OTM the strike is (higher = prioritize preserving upside)"
         )
 
@@ -1322,8 +1380,9 @@ def main():
             "Top N to display (cross-ticker)",
             min_value=5,
             max_value=100,
-            value=20,
+            value=saved_settings.get('top_n_scores', 20),
             step=5,
+            key='top_n_scores',
             help="Number of top-scoring options to show in cross-ticker view"
         )
     else:
